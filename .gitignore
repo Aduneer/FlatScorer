@@ -1,0 +1,35 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Environments & Dependencies
+.venv/
+venv/
+env/
+ENV/
+build/
+dist/
+*.egg-info/
+
+# Generated FlatScorer Output Files
+apartment_scores.csv
+apartment_map.html
+*.csv
+*.html
+
+# User Configuration Overrides
+# Keep default config templates tracked, but ignore custom local configs with secrets or personal addresses
+config.json
+!config.example.json
+
+# Spatial / OSMnx Cache Directories
+.cache/
+cache/
+
+# IDEs and Editors
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store

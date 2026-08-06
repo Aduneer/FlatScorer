@@ -11,7 +11,14 @@
   <a href="#quick-start">Quick Start</a> ·
   <a href="#how-it-works">How It Works</a> ·
   <a href="#configuration">Configuration</a> ·
-  <a href="#cli-reference">CLI Reference</a>
+  <a href="#cli-reference">CLI Reference</a> ·
+  <a href="https://aduneer.github.io/FlatScorer/">Live Demo</a>
+</p>
+
+<p align="center">
+  <a href="https://github.com/Aduneer/FlatScorer/actions/workflows/ci.yml"><img src="https://github.com/Aduneer/FlatScorer/actions/workflows/ci.yml/badge.svg" alt="CI status"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/github/license/Aduneer/FlatScorer" alt="License"></a>
+  <img src="https://img.shields.io/badge/python-3.9%2B-blue" alt="Python 3.9+">
 </p>
 
 ---
@@ -29,6 +36,15 @@ a ranked table, a CSV, an interactive HTML map, and a sensitivity analysis that
 tells you whether your ranking is robust or hinges on a single weight choice.
 
 **Works anywhere in the world** — CRS is auto-detected from your coordinates.
+
+## Demo
+
+A live interactive map built from the demo Washington, DC data is hosted on
+[GitHub Pages](https://aduneer.github.io/FlatScorer/).
+
+| Terminal output | Interactive map |
+|---|---|
+| ![Terminal ranking table](assets/screenshot_table.png) | ![Interactive Folium map](assets/screenshot_map.png) |
 
 ## Quick Start
 
