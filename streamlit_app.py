@@ -14,12 +14,14 @@ This file only *calls into* FlatScorer.py — it does not duplicate or
 modify any scoring logic, so behavior always matches the CLI tool exactly.
 """
 
+from __future__ import annotations
+
 import contextlib
 import io
 import json
 import os
 import tempfile
-from typing import Any, Dict
+from typing import Any
 
 import pandas as pd
 import streamlit as st
@@ -73,7 +75,7 @@ def _init_state():
     st.session_state.params = dict(DEFAULT_PARAMS)
 
 
-def _load_config_into_state(config: Dict[str, Any]):
+def _load_config_into_state(config: dict[str, Any]):
     st.session_state.candidates_df = pd.DataFrame(config.get("candidates", []))
 
     dest_rows = []
@@ -91,7 +93,7 @@ def _load_config_into_state(config: Dict[str, Any]):
     st.session_state.params = dict(DEFAULT_PARAMS, **config.get("parameters", {}))
 
 
-def _build_config() -> Dict[str, Any]:
+def _build_config() -> dict[str, Any]:
     """Assemble a FlatScorer-compatible config dict from the current form state."""
     candidates = []
     for _, row in st.session_state.candidates_df.iterrows():
@@ -525,7 +527,7 @@ with st.sidebar:
             try:
                 _load_config_into_state(json.load(uploaded))
                 st.success("Config loaded successfully.")
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001 - config upload can fail with any JSON/schema error; report it in the UI
                 st.error(f"Couldn't parse JSON file: {e}")
 
         if st.button("Reset to Demo Data (DC)", width="stretch"):
@@ -747,13 +749,17 @@ elif selected_nav.startswith("🚀"):
                 with contextlib.redirect_stdout(log_capture):
                     scorer = FlatScorer(config, verbose=True)
                     df = scorer.run()
+                with open(config["output"]["html_file"], encoding="utf-8") as f:
+                    map_html = f.read()
+                with open(config["output"]["csv_file"], "rb") as f:
+                    csv_bytes = f.read()
                 st.session_state.last_result = {
                     "df": df,
                     "log": log_capture.getvalue(),
-                    "map_html": open(config["output"]["html_file"], encoding="utf-8").read(),
-                    "csv_bytes": open(config["output"]["csv_file"], "rb").read(),
+                    "map_html": map_html,
+                    "csv_bytes": csv_bytes,
                 }
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001 - run() can raise from geopandas/osmnx/networkx; surface any failure in the UI instead of crashing
                 st.session_state.last_result = {"error": str(e), "log": log_capture.getvalue()}
 
     result = st.session_state.get("last_result")

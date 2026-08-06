@@ -14,21 +14,22 @@ Usage:
 See README.md for full documentation.
 """
 
+from __future__ import annotations
+
 import argparse
 import json
 import os
 import sys
 import time
-from typing import Dict, Any, List, Tuple, Optional
+from typing import Any
 
-import geopandas as gpd
-import pandas as pd
-import osmnx as ox
-import networkx as nx
 import folium
+import geopandas as gpd
+import networkx as nx
+import osmnx as ox
+import pandas as pd
 import requests
 from shapely.geometry import Point
-
 
 # Configure default OSMnx settings
 ox.settings.use_cache = True
@@ -123,12 +124,12 @@ def query_with_retry(fn, mirrors=DEFAULT_OVERPASS_MIRRORS, retries_per_mirror=2,
     ) from last_err
 
 
-def geocode_safe(address: str, label: str) -> Optional[Tuple[float, float]]:
+def geocode_safe(address: str, label: str) -> tuple[float, float] | None:
     """Safely geocode an address into (latitude, longitude) tuple."""
     try:
         coords = ox.geocode(address)
         return coords
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 - geocoding can fail from network errors or osmnx's own exceptions; drop this candidate instead of crashing the run
         print(f"[!] Couldn't geocode '{label}': {address} ({e})")
         print("    Ensure the address includes street, house number, postal code, and city.")
         return None
@@ -156,14 +157,14 @@ def count_nearby(lat: float, lon: float, gdf_proj: gpd.GeoDataFrame, crs: str, d
     return int(gdf_proj.intersects(buf).sum())
 
 
-def nearest_distance_m(lat: float, lon: float, gdf_proj: gpd.GeoDataFrame, crs: str) -> Optional[float]:
+def nearest_distance_m(lat: float, lon: float, gdf_proj: gpd.GeoDataFrame, crs: str) -> float | None:
     """Find distance in meters to the nearest feature in `gdf_proj`."""
     if gdf_proj is None or len(gdf_proj) == 0:
         return None
     return float(gdf_proj.distance(to_point(lat, lon, crs)).min())
 
 
-def green_area_and_points(lat: float, lon: float, gdf_proj: gpd.GeoDataFrame, crs: str, dist: float = 500) -> Tuple[float, int]:
+def green_area_and_points(lat: float, lon: float, gdf_proj: gpd.GeoDataFrame, crs: str, dist: float = 500) -> tuple[float, int]:
     """Calculate total green polygon area (m²) and green point count within `dist` meters."""
     if gdf_proj is None or len(gdf_proj) == 0:
         return 0.0, 0
@@ -176,7 +177,7 @@ def green_area_and_points(lat: float, lon: float, gdf_proj: gpd.GeoDataFrame, cr
     return float(area_m2), point_count
 
 
-def walk_minutes(G: nx.MultiDiGraph, orig: Tuple[float, float], dest: Tuple[float, float], walking_speed_m_per_min: float = 83.33) -> float:
+def walk_minutes(G: nx.MultiDiGraph, orig: tuple[float, float], dest: tuple[float, float], walking_speed_m_per_min: float = 83.33) -> float:
     """Calculate walking time in minutes between two coordinates over OSM graph G (~5 km/h = 83.33 m/min)."""
     orig_node = ox.distance.nearest_nodes(G, orig[1], orig[0])
     dest_node = ox.distance.nearest_nodes(G, dest[1], dest[0])
@@ -193,7 +194,7 @@ def walk_minutes(G: nx.MultiDiGraph, orig: Tuple[float, float], dest: Tuple[floa
 class FlatScorer:
     """Multi-criteria apartment scoring engine."""
 
-    def __init__(self, config: Dict[str, Any], verbose: bool = True):
+    def __init__(self, config: dict[str, Any], verbose: bool = True):
         self.config = config
         self.verbose = verbose
 
@@ -212,7 +213,7 @@ class FlatScorer:
         if self.verbose:
             print(msg)
 
-    def resolve_crs(self, lats: List[float], lons: List[float]) -> str:
+    def resolve_crs(self, lats: list[float], lons: list[float]) -> str:
         """Determine projected CRS (e.g. UTM zone) for metric calculations."""
         if self.configured_crs and self.configured_crs.lower() != "auto":
             return self.configured_crs
@@ -223,7 +224,7 @@ class FlatScorer:
         self._log(f"[+] Auto-detected optimal projected CRS: {estimated_crs}")
         return estimated_crs
 
-    def compute_score(self, m: Dict[str, Any], weights: Dict[str, float]) -> float:
+    def compute_score(self, m: dict[str, Any], weights: dict[str, float]) -> float:
         """Calculate total score based on metrics dictionary and weight vector."""
         score = (
             weights.get("supermarket", 0.30) * m.get("supermarket_count", 0)
@@ -247,7 +248,7 @@ class FlatScorer:
 
         return score
 
-    def run_sensitivity_check(self, metrics_by_name: Dict[str, Dict[str, Any]], perturb: float = 0.2):
+    def run_sensitivity_check(self, metrics_by_name: dict[str, dict[str, Any]], perturb: float = 0.2):
         """Run sensitivity analysis by nudging weights by +/- perturb% and observing winner stability."""
         baseline_scores = {n: self.compute_score(m, self.weights) for n, m in metrics_by_name.items()}
         if not baseline_scores:
@@ -428,7 +429,7 @@ class FlatScorer:
 
         return df
 
-    def generate_map(self, df: pd.DataFrame, resolved_destinations: Dict[str, Any], html_file: str):
+    def generate_map(self, df: pd.DataFrame, resolved_destinations: dict[str, Any], html_file: str):
         """Generate interactive Folium map with candidate apartments and destination pins."""
         first_lat = df.iloc[0]["lat"]
         first_lon = df.iloc[0]["lon"]
