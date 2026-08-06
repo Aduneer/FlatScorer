@@ -15,8 +15,6 @@ dist/
 # Generated FlatScorer Output Files
 apartment_scores.csv
 apartment_map.html
-*.csv
-*.html
 
 # User Configuration Overrides
 # Keep default config templates tracked, but ignore custom local configs with secrets or personal addresses
