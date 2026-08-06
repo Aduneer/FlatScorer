@@ -11,7 +11,7 @@
   <a href="#quick-start">Quick Start</a> ·
   <a href="#how-it-works">How It Works</a> ·
   <a href="#configuration">Configuration</a> ·
-  <a href="#cli-reference">CLI Reference</a> ·
+  <a href="#cli-reference">CLI Reference</a>
 </p>
 
 <p align="center">
