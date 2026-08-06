@@ -9,6 +9,7 @@
 
 <p align="center">
   <a href="#quick-start">Quick Start</a> ·
+  <a href="#gui">GUI</a> ·
   <a href="#how-it-works">How It Works</a> ·
   <a href="#configuration">Configuration</a> ·
   <a href="#cli-reference">CLI Reference</a>
@@ -59,6 +60,25 @@ python FlatScorer.py --config config.json
 
 Running without `--config` uses built-in demo data (Washington, DC) so you can
 try it immediately.
+
+## GUI
+
+Prefer a form over JSON? There's a Streamlit interface that wraps the same
+scoring engine — build your candidate list and destinations in a table,
+tune weights with sliders, and get the ranked table and interactive map
+right in your browser.
+
+```bash
+pip install -r requirements-gui.txt
+streamlit run streamlit_app.py
+```
+
+It reuses `FlatScorer.py` directly, so results are identical to the CLI —
+this is just a friendlier way to build the config and view the output.
+
+<p align="center">
+  <img src="assets/gui_preview.png" alt="FlatScorer Streamlit GUI" width="800"/>
+</p>
 
 ## How It Works
 
