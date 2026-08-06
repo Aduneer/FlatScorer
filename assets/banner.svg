@@ -1,0 +1,63 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 200" role="img">
+  <title>FlatScorer</title>
+  <desc>Banner for FlatScorer, a multi-criteria apartment scoring tool using OpenStreetMap data</desc>
+
+  <rect width="900" height="200" rx="14" fill="#f5f1e8" stroke="#e2dcc8" stroke-width="1"/>
+
+  <g opacity="0.5" stroke="#d8d1bb" stroke-width="0.5">
+    <line x1="560" y1="30" x2="560" y2="172"/>
+    <line x1="710" y1="30" x2="710" y2="172"/>
+    <line x1="860" y1="30" x2="860" y2="172"/>
+  </g>
+
+  <g fill="none" stroke="#c1502f">
+    <path d="M630 172 A 100 100 0 0 1 830 172" opacity="0.06"/>
+    <path d="M660 172 A 70 70 0 0 1 800 172" opacity="0.09"/>
+    <path d="M690 172 A 40 40 0 0 1 770 172" opacity="0.13"/>
+  </g>
+
+  <text x="50" y="92" font-family="Georgia, 'Times New Roman', serif" font-weight="700" font-size="46" fill="#20242c" letter-spacing="-0.5">flatscorer</text>
+
+  <text x="51" y="118" font-family="'JetBrains Mono', 'Courier New', monospace" font-size="14" fill="#7a7364">multi-criteria apartment scoring from openstreetmap data</text>
+
+  <g stroke="#c1502f" opacity="0.55" stroke-width="1">
+    <line x1="50" y1="132" x2="330" y2="132"/>
+    <line x1="50" y1="132" x2="50" y2="138"/>
+    <line x1="90" y1="132" x2="90" y2="136"/>
+    <line x1="130" y1="132" x2="130" y2="138"/>
+    <line x1="170" y1="132" x2="170" y2="136"/>
+    <line x1="210" y1="132" x2="210" y2="138"/>
+    <line x1="250" y1="132" x2="250" y2="136"/>
+    <line x1="290" y1="132" x2="290" y2="138"/>
+    <line x1="330" y1="132" x2="330" y2="136"/>
+  </g>
+
+  <text x="50" y="160" font-family="'JetBrains Mono', 'Courier New', monospace" font-size="13">
+    <tspan fill="#b5502f">python</tspan>
+    <tspan fill="#a49c88"> / </tspan>
+    <tspan fill="#3f6b52">osm</tspan>
+    <tspan fill="#a49c88"> / </tspan>
+    <tspan fill="#3a5f80">gis</tspan>
+    <tspan fill="#a49c88"> / </tspan>
+    <tspan fill="#6b5a94">cli</tspan>
+  </text>
+
+  <line x1="560" y1="172" x2="860" y2="172" stroke="#d8d1bb" stroke-width="1"/>
+
+  <g stroke="#bdb6a1" stroke-width="1">
+    <rect x="585" y="137" width="22" height="35" fill="#ddd7c8"/>
+    <rect x="617" y="117" width="22" height="55" fill="#ddd7c8"/>
+    <rect x="649" y="147" width="22" height="25" fill="#ddd7c8"/>
+    <rect x="713" y="132" width="22" height="40" fill="#ddd7c8"/>
+    <rect x="745" y="112" width="22" height="60" fill="#ddd7c8"/>
+    <rect x="777" y="142" width="22" height="30" fill="#ddd7c8"/>
+    <rect x="809" y="122" width="22" height="50" fill="#ddd7c8"/>
+  </g>
+  <rect x="681" y="102" width="22" height="70" fill="#c1502f" stroke="#8f3620" stroke-width="1"/>
+
+  <line x1="692" y1="98" x2="692" y2="102" stroke="#c1502f" stroke-width="1"/>
+  <circle cx="692" cy="84" r="14" fill="#f7ead9" stroke="#c1502f" stroke-width="1"/>
+  <text x="692" y="88" font-family="'JetBrains Mono', 'Courier New', monospace" font-weight="700" font-size="11" fill="#8f3620" text-anchor="middle">9.2</text>
+
+  <text x="713" y="87" font-family="'JetBrains Mono', 'Courier New', monospace" font-size="10" fill="#8a6c46">best match</text>
+</svg>

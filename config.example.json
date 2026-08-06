@@ -1,0 +1,53 @@
+{
+  "candidates": [
+    {
+      "name": "Flat A - Dupont Circle",
+      "address": "1500 Connecticut Ave NW, Washington, DC 20036, USA",
+      "rent": 1800
+    },
+    {
+      "name": "Flat B - Foggy Bottom",
+      "address": "2100 Pennsylvania Avenue NW, Washington, DC 20037, USA",
+      "rent": 2100
+    },
+    {
+      "name": "Flat C - Logan Circle",
+      "address": "1400 14th St NW, Washington, DC 20005, USA",
+      "rent": 1950
+    }
+  ],
+  "destinations": {
+    "White House": {
+      "address": "1600 Pennsylvania Ave NW, Washington, DC 20500, USA",
+      "weight": 0.15,
+      "icon": "landmark",
+      "color": "blue"
+    },
+    "Union Station": {
+      "address": "50 Massachusetts Ave NE, Washington, DC 20002, USA",
+      "weight": 0.15,
+      "icon": "train",
+      "color": "red"
+    }
+  },
+  "weights": {
+    "supermarket": 0.3,
+    "bakery": 0.1,
+    "pharmacy": 0.15,
+    "gym": 0.15,
+    "transit": 0.33,
+    "green": 0.05,
+    "noise": 0.05,
+    "rent": 0.25
+  },
+  "parameters": {
+    "euros_per_extra_minute": 20,
+    "buffer_m": 500,
+    "noise_cap_m": 200,
+    "projected_crs": "auto"
+  },
+  "output": {
+    "csv_file": "apartment_scores.csv",
+    "html_file": "apartment_map.html"
+  }
+}
