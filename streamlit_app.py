@@ -597,7 +597,7 @@ if selected_nav.startswith("🏠"):
             "rent": st.column_config.NumberColumn("Rent (€/month)", min_value=0, step=50, format="%d €"),
         },
         key="candidates_editor",
-    )
+    ).reset_index(drop=True)
 
 
 elif selected_nav.startswith("📍"):
@@ -628,7 +628,7 @@ elif selected_nav.startswith("📍"):
             "color": st.column_config.SelectboxColumn("Map Color", options=COLOR_CHOICES),
         },
         key="destinations_editor",
-    )
+    ).reset_index(drop=True)
 
 
 elif selected_nav.startswith("⚖️"):
