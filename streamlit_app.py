@@ -75,7 +75,33 @@ def _init_state():
     st.session_state.params = dict(DEFAULT_PARAMS)
 
 
+def _editor_baseline(state_key: str, editor_key: str) -> pd.DataFrame:
+    """Return the stable frame to hand `st.data_editor` as its baseline.
+
+    `st.data_editor` tracks edits as a delta against the exact frame it was
+    given, so that frame has to stay identical for as long as the widget stays
+    mounted — assigning the edited result back over it desyncs the delta and
+    makes entries revert (streamlit/streamlit#7354). The widget key is absent
+    only on a fresh mount, since Streamlit drops widget state whenever the
+    widget isn't rendered (e.g. while another nav page is open), so that is the
+    one safe moment to adopt the latest edited data as the new baseline.
+    """
+    baseline_key = f"{state_key}_baseline"
+    if editor_key not in st.session_state:
+        st.session_state[baseline_key] = st.session_state[state_key].reset_index(drop=True)
+    return st.session_state[baseline_key]
+
+
+def _reset_editor_state():
+    """Drop editor deltas so a freshly loaded config isn't re-edited by stale ones."""
+    for key in ("candidates_editor", "destinations_editor",
+                "candidates_df_baseline", "destinations_df_baseline"):
+        if key in st.session_state:
+            del st.session_state[key]
+
+
 def _load_config_into_state(config: dict[str, Any]):
+    _reset_editor_state()
     st.session_state.candidates_df = pd.DataFrame(config.get("candidates", []))
 
     dest_rows = []
@@ -588,7 +614,7 @@ if selected_nav.startswith("🏠"):
     )
 
     st.session_state.candidates_df = st.data_editor(
-        st.session_state.candidates_df,
+        _editor_baseline("candidates_df", "candidates_editor"),
         num_rows="dynamic",
         width="stretch",
         column_config={
@@ -614,7 +640,7 @@ elif selected_nav.startswith("📍"):
     )
 
     st.session_state.destinations_df = st.data_editor(
-        st.session_state.destinations_df,
+        _editor_baseline("destinations_df", "destinations_editor"),
         num_rows="dynamic",
         width="stretch",
         column_config={
