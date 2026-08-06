@@ -12,7 +12,6 @@
   <a href="#how-it-works">How It Works</a> ·
   <a href="#configuration">Configuration</a> ·
   <a href="#cli-reference">CLI Reference</a> ·
-  <a href="https://aduneer.github.io/FlatScorer/">Live Demo</a>
 </p>
 
 <p align="center">
@@ -37,10 +36,7 @@ tells you whether your ranking is robust or hinges on a single weight choice.
 
 **Works anywhere in the world** — CRS is auto-detected from your coordinates.
 
-## Demo
-
-A live interactive map built from the demo Washington, DC data is hosted on
-[GitHub Pages](https://aduneer.github.io/FlatScorer/).
+## Preview
 
 | Terminal output | Interactive map |
 |---|---|
