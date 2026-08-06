@@ -46,6 +46,9 @@ DEFAULT_OVERPASS_MIRRORS = [
     "https://overpass.private.coffee/api",
 ]
 
+# Winner/runner-up score gap below which the top two are reported as effectively tied
+NARROW_MARGIN_THRESHOLD = 0.5
+
 # Default configuration template (Generic demo using Washington, DC landmarks)
 DEFAULT_CONFIG = {
     "candidates": [
@@ -136,6 +139,14 @@ def geocode_safe(address: str, label: str) -> tuple[float, float] | None:
         return None
 
 
+def _winner_margin(scores: dict[str, float]) -> float | None:
+    """Return the score gap between the top pick and the runner-up, or None if fewer than two."""
+    if len(scores) < 2:
+        return None
+    ranked = sorted(scores.values(), reverse=True)
+    return ranked[0] - ranked[1]
+
+
 def safe_filter(gdf: gpd.GeoDataFrame, col: str, val: Any) -> gpd.GeoDataFrame:
     """Filter a GeoDataFrame by column value(s), returning an empty GeoDataFrame if column missing."""
     if gdf is None or len(gdf) == 0 or col not in gdf.columns:
@@ -213,6 +224,12 @@ class FlatScorer:
         self.configured_crs = self.params.get("projected_crs", "auto")
         self.show_walk_routes = self.params.get("show_walk_routes", True)
 
+        # Populated by run(): (name, address) pairs that failed to geocode and
+        # were therefore dropped from the ranking. Callers (e.g. the GUI) read
+        # this to surface silent losses instead of quietly ranking fewer flats.
+        self.failed_candidates: list[tuple[str, str]] = []
+        self.failed_destinations: list[tuple[str, str]] = []
+
     def _log(self, msg: str):
         if self.verbose:
             print(msg)
@@ -259,8 +276,11 @@ class FlatScorer:
             return
 
         baseline_top = max(baseline_scores, key=baseline_scores.get)
+        baseline_margin = _winner_margin(baseline_scores)
 
         self._log(f"\nSensitivity check (each weight nudged +/-{int(perturb*100)}%, baseline winner: {baseline_top})")
+        if baseline_margin is not None:
+            self._log(f"Baseline margin over runner-up: {baseline_margin:.2f} points")
         self._log("-" * 75)
 
         # Build list of active weight keys
@@ -271,26 +291,39 @@ class FlatScorer:
                 active_weights[weight_key] = self.destinations_config[dest_name].get("weight", 0.15)
 
         any_flip = False
+        narrowest_margin = baseline_margin
         for key, base_val in active_weights.items():
             for factor, label in [(1 + perturb, f"+{int(perturb*100)}%"), (1 - perturb, f"-{int(perturb*100)}%")]:
                 w2 = dict(active_weights)
                 w2[key] = base_val * factor
                 scores2 = {n: self.compute_score(m, w2) for n, m in metrics_by_name.items()}
                 new_top = max(scores2, key=scores2.get)
+                margin = _winner_margin(scores2)
+                if margin is not None and (narrowest_margin is None or margin < narrowest_margin):
+                    narrowest_margin = margin
                 flipped = new_top != baseline_top
                 any_flip = any_flip or flipped
                 marker = "  <- winner changes!" if flipped else ""
-                self._log(f"  {key:18s} {label:5s}  ->  top pick: {new_top}{marker}")
+                margin_txt = f" (margin {margin:.2f})" if margin is not None else ""
+                self._log(f"  {key:18s} {label:5s}  ->  top pick: {new_top}{margin_txt}{marker}")
 
         self._log("-" * 75)
         if not any_flip:
-            self._log("Ranking is stable across all +/-20% weight nudges - your top pick is robust.")
+            self._log(f"Ranking is stable across all +/-{int(perturb*100)}% weight nudges - your top pick is robust.")
         else:
             self._log("Some weight changes flip the top pick - consider reviewing those criteria weights carefully.")
+
+        if narrowest_margin is not None:
+            self._log(f"Narrowest winner/runner-up gap seen: {narrowest_margin:.2f} points")
+            if narrowest_margin < NARROW_MARGIN_THRESHOLD:
+                self._log(f"[!] That is under {NARROW_MARGIN_THRESHOLD:.1f} points - the top two are effectively tied; "
+                          "treat the ranking as a toss-up rather than a clear winner.")
 
     def run(self) -> pd.DataFrame:
         """Execute geocoding, spatial network fetching, metric calculation, and reporting."""
         self._log("Geocoding candidate apartment addresses...")
+        self.failed_candidates = []
+        self.failed_destinations = []
         resolved_candidates = {}
         for candidate in self.candidates_raw:
             name = candidate["name"]
@@ -299,9 +332,17 @@ class FlatScorer:
             coords = geocode_safe(addr, name)
             if coords:
                 resolved_candidates[name] = {"coords": coords, "rent": rent, "address": addr, "raw": candidate}
+            else:
+                self.failed_candidates.append((name, addr))
 
         if not resolved_candidates:
             raise ValueError("No valid candidate apartment addresses could be geocoded.")
+
+        if self.failed_candidates:
+            print(f"\n[!] {len(self.failed_candidates)} candidate(s) dropped - they could not be geocoded "
+                  "and are MISSING from the ranking:")
+            for name, addr in self.failed_candidates:
+                print(f"      - {name}: {addr}")
 
         self._log("\nGeocoding destination locations...")
         resolved_destinations = {}
@@ -314,6 +355,7 @@ class FlatScorer:
                     "info": dest_info
                 }
             else:
+                self.failed_destinations.append((dest_name, addr))
                 print(f"[!] Warning: Destination '{dest_name}' could not be geocoded and will be skipped.")
 
         # Determine bounding box

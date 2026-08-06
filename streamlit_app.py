@@ -790,6 +790,8 @@ elif selected_nav.startswith("🚀"):
                     "log": log_capture.getvalue(),
                     "map_html": map_html,
                     "csv_bytes": csv_bytes,
+                    "failed_candidates": scorer.failed_candidates,
+                    "failed_destinations": scorer.failed_destinations,
                 }
             except Exception as e:  # noqa: BLE001 - run() can raise from geopandas/osmnx/networkx; surface any failure in the UI instead of crashing
                 st.session_state.last_result = {"error": str(e), "log": log_capture.getvalue()}
@@ -803,6 +805,24 @@ elif selected_nav.startswith("🚀"):
                 st.text(result["log"])
         else:
             df = result["df"]
+
+            # Geocoding failures drop rows from the ranking entirely - say so loudly,
+            # otherwise a flat just disappears from the results without explanation.
+            failed_candidates = result.get("failed_candidates") or []
+            failed_destinations = result.get("failed_destinations") or []
+            if failed_candidates:
+                lines = "\n".join(f"- **{name}** — `{addr}`" for name, addr in failed_candidates)
+                st.error(
+                    f"⚠️ {len(failed_candidates)} candidate(s) could not be geocoded and are "
+                    f"**missing from the ranking below**:\n\n{lines}\n\n"
+                    "Check that each address includes street, house number, postal code, and city."
+                )
+            if failed_destinations:
+                lines = "\n".join(f"- **{name}** — `{addr}`" for name, addr in failed_destinations)
+                st.warning(
+                    f"⚠️ {len(failed_destinations)} destination(s) could not be geocoded and were "
+                    f"**excluded from commute scoring**:\n\n{lines}"
+                )
 
             # Top Match Callout Badge
             if not df.empty and "score" in df.columns:

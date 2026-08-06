@@ -25,6 +25,9 @@ config.json
 .cache/
 cache/
 
+# Personal working notes / idea backlog
+TODO.md
+
 # IDEs and Editors
 .vscode/
 .idea/
