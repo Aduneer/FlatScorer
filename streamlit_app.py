@@ -710,6 +710,12 @@ elif selected_nav.startswith("⚖️"):
             help="'auto' picks the correct UTM zone, or provide EPSG code (e.g. EPSG:25832).",
         )
 
+    st.session_state.params["show_walk_routes"] = st.checkbox(
+        "Show predicted walking routes on map by default",
+        value=bool(st.session_state.params.get("show_walk_routes", True)),
+        help="Draws each candidate's shortest walking path to every destination on the map. Always toggleable via the map's layer control.",
+    )
+
 
 elif selected_nav.startswith("🚀"):
     config = _build_config()

@@ -44,7 +44,8 @@
     "euros_per_extra_minute": 20,
     "buffer_m": 500,
     "noise_cap_m": 200,
-    "projected_crs": "auto"
+    "projected_crs": "auto",
+    "show_walk_routes": true
   },
   "output": {
     "csv_file": "apartment_scores.csv",

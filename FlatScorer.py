@@ -93,7 +93,8 @@ DEFAULT_CONFIG = {
         "euros_per_extra_minute": 20,
         "buffer_m": 500,
         "noise_cap_m": 200,
-        "projected_crs": "auto"
+        "projected_crs": "auto",
+        "show_walk_routes": True
     },
     "output": {
         "csv_file": "apartment_scores.csv",
@@ -177,18 +178,20 @@ def green_area_and_points(lat: float, lon: float, gdf_proj: gpd.GeoDataFrame, cr
     return float(area_m2), point_count
 
 
-def walk_minutes(G: nx.MultiDiGraph, orig: tuple[float, float], dest: tuple[float, float], walking_speed_m_per_min: float = 83.33) -> float:
-    """Calculate walking time in minutes between two coordinates over OSM graph G (~5 km/h = 83.33 m/min)."""
+def walk_route(G: nx.MultiDiGraph, orig: tuple[float, float], dest: tuple[float, float], walking_speed_m_per_min: float = 83.33) -> tuple[float, list[tuple[float, float]]]:
+    """Calculate walking time in minutes and the shortest-path route (list of lat/lon points) between two coordinates over OSM graph G (~5 km/h = 83.33 m/min)."""
     orig_node = ox.distance.nearest_nodes(G, orig[1], orig[0])
     dest_node = ox.distance.nearest_nodes(G, dest[1], dest[0])
     try:
-        length_m = nx.shortest_path_length(G, orig_node, dest_node, weight="length")
-        return length_m / walking_speed_m_per_min
+        path = nx.shortest_path(G, orig_node, dest_node, weight="length")
+        length_m = nx.path_weight(G, path, weight="length")
+        route = [(G.nodes[n]["y"], G.nodes[n]["x"]) for n in path]
+        return length_m / walking_speed_m_per_min, route
     except nx.NetworkXNoPath:
         print(f"[!] Warning: No walking path found between {orig} and {dest}. Defaulting to straight-line distance.")
         # Fallback to straight-line estimate
         dist_m = Point(orig[1], orig[0]).distance(Point(dest[1], dest[0])) * 111000
-        return dist_m / walking_speed_m_per_min
+        return dist_m / walking_speed_m_per_min, [orig, dest]
 
 
 class FlatScorer:
@@ -208,6 +211,7 @@ class FlatScorer:
         self.buffer_m = self.params.get("buffer_m", 500)
         self.noise_cap_m = self.params.get("noise_cap_m", 200)
         self.configured_crs = self.params.get("projected_crs", "auto")
+        self.show_walk_routes = self.params.get("show_walk_routes", True)
 
     def _log(self, msg: str):
         if self.verbose:
@@ -363,6 +367,7 @@ class FlatScorer:
 
         self._log("\nScoring candidates...")
         metrics_by_name = {}
+        routes_by_candidate = {}
         rows = []
 
         for name, info in resolved_candidates.items():
@@ -375,9 +380,11 @@ class FlatScorer:
             noise_benefit = min(effective_road_dist, self.noise_cap_m) / 20.0
 
             dest_times = {}
+            dest_routes = {}
             for dest_name, dest_data in resolved_destinations.items():
                 dest_coords = dest_data["coords"]
-                dest_times[dest_name] = walk_minutes(G, (lat, lon), dest_coords)
+                dest_times[dest_name], dest_routes[dest_name] = walk_route(G, (lat, lon), dest_coords)
+            routes_by_candidate[name] = dest_routes
 
             m = {
                 "supermarket_count": count_nearby(lat, lon, supermarkets_p, projected_crs, dist=self.buffer_m),
@@ -425,15 +432,17 @@ class FlatScorer:
 
         # Generate Folium Map
         html_file = self.output_config.get("html_file", "apartment_map.html")
-        self.generate_map(df, resolved_destinations, html_file)
+        self.generate_map(df, resolved_destinations, html_file, routes_by_candidate)
 
         return df
 
-    def generate_map(self, df: pd.DataFrame, resolved_destinations: dict[str, Any], html_file: str):
-        """Generate interactive Folium map with candidate apartments and destination pins."""
+    def generate_map(self, df: pd.DataFrame, resolved_destinations: dict[str, Any], html_file: str, routes_by_candidate: dict[str, dict[str, list[tuple[float, float]]]] | None = None):
+        """Generate interactive Folium map with candidate apartments, destination pins, and predicted walking routes."""
+        routes_by_candidate = routes_by_candidate or {}
         first_lat = df.iloc[0]["lat"]
         first_lon = df.iloc[0]["lon"]
         m_map = folium.Map(location=[first_lat, first_lon], zoom_start=13)
+        route_group = folium.FeatureGroup(name="Predicted walking routes", show=self.show_walk_routes)
 
         # Add destinations to map
         for dest_name, dest_data in resolved_destinations.items():
@@ -479,6 +488,22 @@ class FlatScorer:
                 popup=popup,
                 icon=folium.Icon(color=color, icon="home", prefix="fa"),
             ).add_to(m_map)
+
+            for dest_name, route_coords in routes_by_candidate.get(row["name"], {}).items():
+                if not route_coords or len(route_coords) < 2:
+                    continue
+                dest_key = dest_name.lower().replace(" ", "_")
+                mins = row.get(f"{dest_key}_walk_min")
+                folium.PolyLine(
+                    locations=route_coords,
+                    color=color,
+                    weight=3,
+                    opacity=0.6,
+                    tooltip=f"{row['name']} → {dest_name}: {mins} min",
+                ).add_to(route_group)
+
+        route_group.add_to(m_map)
+        folium.LayerControl(collapsed=False).add_to(m_map)
 
         m_map.save(html_file)
         self._log(f"[+] Saved interactive map to {html_file}")

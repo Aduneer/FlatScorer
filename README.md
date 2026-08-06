@@ -82,7 +82,7 @@ this is just a friendlier way to build the config and view the output.
 
 ## How It Works
 
-For each candidate apartment, FlatSearcher:
+For each candidate apartment, FlatScorer:
 
 1. **Geocodes** all addresses via Nominatim (through OSMnx).
 2. **Downloads** the walking street network and points of interest for the
@@ -103,7 +103,7 @@ For each candidate apartment, FlatSearcher:
 |---|---|
 | Terminal table | Ranked summary printed to stdout |
 | `apartment_scores.csv` | Full metrics for every candidate |
-| `apartment_map.html` | Interactive Folium map with color-coded pins |
+| `apartment_map.html` | Interactive Folium map with color-coded pins and predicted walking routes |
 | Sensitivity report | ±20% weight perturbation check on ranking stability |
 
 ## Configuration
@@ -148,7 +148,8 @@ Everything is driven by a single JSON file. Generate a template with
     "euros_per_extra_minute": 20,  // rent-to-time tradeoff (€20 ≈ 1 min)
     "buffer_m": 500,               // amenity search radius in meters
     "noise_cap_m": 200,            // noise benefit caps at this distance
-    "projected_crs": "auto"        // auto-detect UTM zone, or e.g. "EPSG:25832"
+    "projected_crs": "auto",       // auto-detect UTM zone, or e.g. "EPSG:25832"
+    "show_walk_routes": true       // draw predicted walking routes on the map by default
   },
 
   "output": {
@@ -171,6 +172,12 @@ Everything is driven by a single JSON file. Generate a template with
 - **Destination `weight`** — Controls how heavily each destination's walking
   time penalises the score. A weight of 0.15 on a 40-minute walk subtracts 6
   points; at 0.30 it would subtract 12.
+
+- **`show_walk_routes`** — Whether the map's "Predicted walking routes" layer
+  starts visible. The routes trace each candidate's actual shortest path over
+  the OSM pedestrian network to every destination (color-matched to that
+  candidate's score) and can always be toggled via the map's layer control
+  regardless of this setting.
 
 ## CLI Reference
 
@@ -200,7 +207,7 @@ pip install -r requirements.txt
 
 ## Overpass API Resilience
 
-The Overpass API (used for OSM data) can be flaky. FlatSearcher automatically
+The Overpass API (used for OSM data) can be flaky. FlatScorer automatically
 retries failed requests and rotates through three public mirrors:
 
 - `overpass-api.de`
@@ -212,7 +219,7 @@ OSM infrastructure occasionally has outages.
 
 ## Data & Attribution
 
-FlatSearcher runs on free, community-maintained OpenStreetMap infrastructure:
+FlatScorer runs on free, community-maintained OpenStreetMap infrastructure:
 
 - Map, amenity, and road data: © [OpenStreetMap](https://www.openstreetmap.org/copyright)
   contributors, [ODbL](https://opendatacommons.org/licenses/odbl/).
