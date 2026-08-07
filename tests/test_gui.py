@@ -136,3 +136,49 @@ def test_editing_a_saturation_widget_does_not_mutate_the_module_default():
     assert app.session_state.params["saturation"]["transit"] == 99.0
     assert streamlit_app.DEFAULT_PARAMS["saturation"]["transit"] == DEFAULT_SATURATION["transit"]
     assert DEFAULT_SATURATION["transit"] != 99.0
+
+
+RUN = "🚀 Run & Results"
+
+
+def build_config_from(app: AppTest) -> dict:
+    import streamlit_app
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(streamlit_app.st, "session_state", app.session_state)
+        return streamlit_app._build_config()
+
+
+def test_a_cleared_rent_cell_becomes_zero_rather_than_nan():
+    # NaN is truthy, so the old `or 0` let a cleared cell through as NaN.
+    app = fresh_app()
+    edit_cell(app, 0, "rent", None)
+    app.run()
+
+    assert not app.exception, app.exception
+    assert build_config_from(app)["candidates"][0]["rent"] == 0
+
+
+def test_a_candidate_with_no_rent_blocks_the_run_button():
+    from FlatScorer import validate_config
+
+    app = fresh_app()
+    edit_cell(app, 0, "rent", None)
+    app.run()
+    app.session_state["main_nav_radio"] = RUN
+    app.run()
+
+    assert not app.exception, app.exception
+    assert validate_config(build_config_from(app)), "a zero rent should not validate"
+    assert app.button[0].disabled, "the run button must be disabled while the config is invalid"
+    assert any("rent" in err.value for err in app.error), [err.value for err in app.error]
+
+
+def test_the_demo_config_leaves_the_run_button_enabled():
+    app = fresh_app()
+    app.session_state["main_nav_radio"] = RUN
+    app.run()
+
+    assert not app.exception, app.exception
+    assert not app.button[0].disabled
+    assert not app.error

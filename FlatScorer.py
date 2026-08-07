@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import sys
 import time
@@ -156,6 +157,169 @@ DEFAULT_CONFIG = {
         "html_file": "apartment_map.html"
     }
 }
+
+
+class ConfigError(ValueError):
+    """A configuration that cannot be scored, carrying *every* problem found.
+
+    Reporting one problem at a time turns fixing a hand-edited config into a
+    round-trip per typo, so `problems` holds the full list and the message
+    renders all of them.
+    """
+
+    def __init__(self, problems: list[str]):
+        self.problems = list(problems)
+        body = "\n".join(f"  - {p}" for p in self.problems)
+        super().__init__(f"Configuration is not valid ({len(self.problems)} problem(s)):\n{body}")
+
+
+def _as_number(value: Any) -> float | None:
+    """Coerce a config value to float, or None if it isn't a usable number.
+
+    `bool` is excluded deliberately: it passes `isinstance(x, int)`, so without
+    this `"rent": true` would sail through as 1.0.
+    """
+    if isinstance(value, bool) or value is None:
+        return None
+    if isinstance(value, (int, float)):
+        return None if math.isnan(value) or math.isinf(value) else float(value)
+    if isinstance(value, str):
+        try:
+            return _as_number(float(value.strip()))
+        except ValueError:
+            return None
+    return None
+
+
+def _validate_candidate(index: int, candidate: Any, problems: list[str], seen_names: dict[str, int]):
+    """Check one candidate entry, appending any problems found."""
+    label = f"candidates[{index}]"
+    if not isinstance(candidate, dict):
+        problems.append(f"{label}: expected an object with 'name', 'address' and 'rent', got {type(candidate).__name__}")
+        return
+
+    name = candidate.get("name")
+    if not isinstance(name, str) or not name.strip():
+        problems.append(f"{label}: 'name' is missing or empty")
+    else:
+        label = f"{label} ('{name}')"
+        # run() keys resolved candidates by name, so a duplicate doesn't rank
+        # twice - it silently overwrites the earlier flat and disappears.
+        if name in seen_names:
+            problems.append(f"{label}: duplicate name, already used by candidates[{seen_names[name]}] - names must be unique")
+        else:
+            seen_names[name] = index
+
+    address = candidate.get("address")
+    if not isinstance(address, str) or not address.strip():
+        problems.append(f"{label}: 'address' is missing or empty")
+
+    if "rent" not in candidate:
+        problems.append(f"{label}: 'rent' is missing - a flat with no rent would score as if it were free, "
+                        "taking full credit on the rent term and likely topping the ranking")
+        return
+    rent = _as_number(candidate["rent"])
+    if rent is None:
+        problems.append(f"{label}: 'rent' must be a number, got {candidate['rent']!r}")
+    elif rent <= 0:
+        problems.append(f"{label}: 'rent' is {rent:g} - a zero or negative rent takes full credit on the rent term "
+                        "and would beat every real flat. Enter the actual monthly rent.")
+
+
+def validate_config(config: Any) -> list[str]:
+    """Return every reason `config` cannot be scored, as human-readable strings.
+
+    Empty list means the config is usable. `--config` is the documented path for
+    hand-edited JSON, so this is the most likely first-run failure - and a bare
+    `KeyError: 'rent'` names neither the field's owner nor the other four things
+    also wrong with the file.
+    """
+    problems: list[str] = []
+    if not isinstance(config, dict):
+        return [f"config: expected a JSON object at the top level, got {type(config).__name__}"]
+
+    candidates = config.get("candidates")
+    if candidates is None:
+        problems.append("candidates: missing - at least one candidate apartment is required")
+    elif not isinstance(candidates, list):
+        problems.append(f"candidates: expected a list, got {type(candidates).__name__}")
+    elif not candidates:
+        problems.append("candidates: empty - at least one candidate apartment is required")
+    else:
+        seen_names: dict[str, int] = {}
+        for index, candidate in enumerate(candidates):
+            _validate_candidate(index, candidate, problems, seen_names)
+
+    destinations = config.get("destinations", {})
+    if not isinstance(destinations, dict):
+        problems.append(f"destinations: expected an object keyed by destination name, got {type(destinations).__name__}")
+    else:
+        for dest_name, dest_info in destinations.items():
+            label = f"destinations['{dest_name}']"
+            if not isinstance(dest_info, dict):
+                problems.append(f"{label}: expected an object with an 'address', got {type(dest_info).__name__}")
+                continue
+            address = dest_info.get("address")
+            if not isinstance(address, str) or not address.strip():
+                problems.append(f"{label}: 'address' is missing or empty")
+            if "weight" in dest_info:
+                weight = _as_number(dest_info["weight"])
+                if weight is None:
+                    problems.append(f"{label}: 'weight' must be a number, got {dest_info['weight']!r}")
+                elif weight < 0:
+                    problems.append(f"{label}: 'weight' is negative ({weight:g}); weights are relative importances and cannot be below 0")
+
+    weights = config.get("weights", {})
+    if not isinstance(weights, dict):
+        problems.append(f"weights: expected an object keyed by metric name, got {type(weights).__name__}")
+    else:
+        for key, value in weights.items():
+            number = _as_number(value)
+            if number is None:
+                problems.append(f"weights['{key}']: must be a number, got {value!r}")
+            elif number < 0:
+                problems.append(f"weights['{key}']: is negative ({number:g}); weights are relative importances and cannot be below 0")
+        # The score is a weighted *average*, so if nothing carries weight there is
+        # nothing to average - every candidate scores 0 and the ranking is arbitrary.
+        # Mirror _resolve_weight: an absent metric falls back to its default, and
+        # destination weights count too (they live in `destinations`, not here).
+        effective = [_as_number(weights.get(key, default)) for key, default in DEFAULT_WEIGHTS.items()]
+        effective += [
+            _as_number(d.get("weight", DEFAULT_DEST_WEIGHT))
+            for d in (destinations.values() if isinstance(destinations, dict) else [])
+            if isinstance(d, dict)
+        ]
+        if not any((n or 0.0) > 0 for n in effective):
+            problems.append("weights: nothing carries any weight, so every candidate scores 0 - set at least one weight above 0")
+
+    params = config.get("parameters", {})
+    if not isinstance(params, dict):
+        problems.append(f"parameters: expected an object, got {type(params).__name__}")
+    else:
+        # Each of these is a normalization anchor or a search radius; a zero or
+        # negative value silently zeroes or inverts the term it governs.
+        for key in ("buffer_m", "noise_cap_m", "rent_budget_eur", "commute_cap_min"):
+            if key not in params:
+                continue
+            number = _as_number(params[key])
+            if number is None:
+                problems.append(f"parameters['{key}']: must be a number, got {params[key]!r}")
+            elif number <= 0:
+                problems.append(f"parameters['{key}']: must be greater than 0, got {number:g}")
+
+        saturation = params.get("saturation", {})
+        if not isinstance(saturation, dict):
+            problems.append(f"parameters['saturation']: expected an object keyed by metric name, got {type(saturation).__name__}")
+        else:
+            for key, value in saturation.items():
+                number = _as_number(value)
+                if number is None:
+                    problems.append(f"parameters['saturation']['{key}']: must be a number, got {value!r}")
+                elif number <= 0:
+                    problems.append(f"parameters['saturation']['{key}']: must be greater than 0, got {number:g} "
+                                    "(it is the amount earning half credit, so it cannot be zero)")
+
+    return problems
 
 
 def query_with_retry(fn, mirrors=DEFAULT_OVERPASS_MIRRORS, retries_per_mirror=2, backoff_s=3):
@@ -541,7 +705,14 @@ class FlatScorer:
                           "treat the ranking as a toss-up rather than a clear winner.")
 
     def run(self) -> pd.DataFrame:
-        """Execute geocoding, spatial network fetching, metric calculation, and reporting."""
+        """Execute geocoding, spatial network fetching, metric calculation, and reporting.
+
+        Raises ConfigError before any network call if the config can't be scored.
+        """
+        problems = validate_config(self.config)
+        if problems:
+            raise ConfigError(problems)
+
         self._log("Geocoding candidate apartment addresses...")
         self.failed_candidates = []
         self.failed_destinations = []
@@ -549,7 +720,9 @@ class FlatScorer:
         for candidate in self.candidates_raw:
             name = candidate["name"]
             addr = candidate["address"]
-            rent = candidate["rent"]
+            # validate_config has already guaranteed this parses to a positive
+            # number; coerce so a config written as "1800" still scores as 1800.
+            rent = _as_number(candidate["rent"])
             coords = geocode_safe(addr, name)
             if coords:
                 resolved_candidates[name] = {"coords": coords, "rent": rent, "address": addr, "raw": candidate}
@@ -827,7 +1000,19 @@ def main():
         if not os.path.exists(args.config):
             sys.exit(f"Error: Config file '{args.config}' not found.")
         with open(args.config, encoding="utf-8") as f:
-            config = json.load(f)
+            try:
+                config = json.load(f)
+            except json.JSONDecodeError as e:
+                sys.exit(f"Error: Config file '{args.config}' is not valid JSON: {e}")
+
+    # Validate before touching the network, and report every problem at once so a
+    # hand-edited config takes one fix-and-rerun cycle rather than one per typo.
+    problems = validate_config(config)
+    if problems:
+        print(f"Error: configuration is not valid ({len(problems)} problem(s)):", file=sys.stderr)
+        for problem in problems:
+            print(f"  - {problem}", file=sys.stderr)
+        sys.exit(1)
 
     if args.csv:
         config.setdefault("output", {})["csv_file"] = args.csv

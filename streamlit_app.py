@@ -33,6 +33,7 @@ from FlatScorer import (
     NARROW_MARGIN_THRESHOLD,
     SCORE_SCALE_MAX,
     FlatScorer,
+    validate_config,
     weight_shares,
 )
 
@@ -140,10 +141,14 @@ def _build_config() -> dict[str, Any]:
     for _, row in st.session_state.candidates_df.iterrows():
         if not str(row.get("name", "")).strip() or not str(row.get("address", "")).strip():
             continue
+        # A cleared rent cell arrives as NaN, which is truthy - so `or 0` misses it
+        # and validate_config would report the cryptic "got nan" instead of the
+        # friendlier "rent is 0, enter the actual monthly rent".
+        rent = pd.to_numeric(row.get("rent", 0), errors="coerce")
         candidates.append({
             "name": row["name"],
             "address": row["address"],
-            "rent": float(row.get("rent", 0) or 0),
+            "rent": 0.0 if pd.isna(rent) else float(rent),
         })
 
     destinations = {}
@@ -860,15 +865,24 @@ elif selected_nav.startswith("🚀"):
         unsafe_allow_html=True,
     )
 
+    # Catch a config the engine would reject before the user waits through
+    # geocoding and an OpenStreetMap download to find out.
+    config_problems = validate_config(config)
+
     run_clicked = st.button(
         "▶ Start Evaluation & Run Scorer",
         type="primary",
-        disabled=(n_candidates == 0),
+        disabled=(n_candidates == 0 or bool(config_problems)),
         width="stretch",
     )
 
     if n_candidates == 0:
         st.warning("⚠️ Please add at least one candidate apartment in the Candidates tab before running.")
+    elif config_problems:
+        st.error(
+            f"⚠️ **{len(config_problems)} problem(s) to fix before running:**\n\n"
+            + "\n".join(f"- {problem}" for problem in config_problems)
+        )
 
     if run_clicked:
         work_dir = tempfile.mkdtemp(prefix="flatscorer_")

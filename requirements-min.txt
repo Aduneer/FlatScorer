@@ -1,0 +1,18 @@
+# Every floor from requirements.txt, pinned exactly.
+#
+# CI installs whatever is newest inside the ranges in requirements.txt, so the
+# declared lower bounds are never actually exercised — a wrong floor passes CI
+# and breaks for anyone who happens to resolve to it. (That is exactly how the
+# osmnx>=1.9.0 floor survived: the code needs the 2.x bbox API.) This file is
+# installed by the `min-versions` CI job on the oldest supported Python.
+#
+# Keep in lockstep with requirements.txt: when a floor moves there, move it here.
+osmnx==2.0.0
+networkx==3.0
+geopandas==0.14.0
+pandas==2.0.0
+folium==0.15.0
+shapely==2.0.0
+requests==2.31.0
+scikit-learn==1.3.0
+scipy==1.10.0

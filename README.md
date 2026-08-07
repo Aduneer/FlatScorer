@@ -244,6 +244,32 @@ Everything is driven by a single JSON file. Generate a template with
   candidate's score) and can always be toggled via the map's layer control
   regardless of this setting.
 
+### Configuration is validated before anything runs
+
+Both the CLI and the GUI check the whole config up front — before any geocoding
+or OpenStreetMap download — and report **every** problem at once, naming the
+candidate rather than just the field:
+
+```
+$ python FlatScorer.py --config config.json
+Error: configuration is not valid (2 problem(s)):
+  - candidates[0] ('Flat A'): 'rent' is missing - a flat with no rent would score
+    as if it were free, taking full credit on the rent term and likely topping
+    the ranking
+  - destinations['Work']: 'address' is missing or empty
+```
+
+Rent is the one worth calling out. Because the rent term gives full credit at €0
+and none at `rent_budget_eur`, a candidate with a blank, zero, or negative rent
+doesn't score neutrally — it scores *perfectly* on that term and tends to win.
+So a missing or non-positive rent is rejected rather than guessed at. The other
+checks cover missing names and addresses, duplicate candidate names (they'd
+silently overwrite each other), non-numeric or negative weights, an all-zero
+weight vector, and non-positive normalization anchors.
+
+In the GUI the same problems appear on the Run page and the run button stays
+disabled until they're fixed.
+
 ## CLI Reference
 
 ```
@@ -299,10 +325,17 @@ ruff check .
 ```
 
 The tests cover the scoring maths (metric normalization, `compute_score`'s 0–10
-bounds under extreme inputs, the score breakdown, the sensitivity check), the
-spatial helpers, geocode throttling/retry, map pin colouring, and the Streamlit
-`data_editor` state handling via `streamlit.testing`. Both `pytest` and
-`ruff check` gate CI.
+bounds under extreme inputs, the score breakdown, the sensitivity check), config
+validation, the spatial helpers, geocode throttling/retry, map pin colouring, and
+the Streamlit `data_editor` state handling via `streamlit.testing`. Both `pytest`
+and `ruff check` gate CI.
+
+`requirements.txt` declares version *ranges*, so CI installing the newest of each
+would never exercise the declared floors — and a wrong floor then only breaks for
+whoever happens to resolve to it. The `min-versions` CI job installs
+`requirements-min.txt` (every `>=` pinned to `==`) on the oldest supported Python
+and runs the import, config-generation, and routing checks against it. Move a
+floor in `requirements.txt` and you must move it there too.
 
 ## Data & Attribution
 
