@@ -34,8 +34,8 @@ METRICS = {
     "gym_count": 1,
     "transit_count": 4,
     "green_score": 10.0,
-    "noise_benefit": 5.0,
-    "rent_time_equiv": 60.0,
+    "noise_distance_m": 150.0,
+    "rent_eur": 1200.0,
     "destinations_min": {},
 }
 
@@ -47,60 +47,206 @@ def make_scorer(**config) -> fs.FlatScorer:
     return fs.FlatScorer(base, verbose=True)
 
 
+# ------------------------------------------------------------- normalization --
+
+def test_benefit_fraction_awards_half_credit_at_the_half_value():
+    assert fs.benefit_fraction(2, 2) == pytest.approx(0.5)
+    assert fs.benefit_fraction(0, 2) == pytest.approx(0.0)
+
+
+def test_benefit_fraction_has_diminishing_returns():
+    # The whole point of the curve: the 6th supermarket is worth far less than
+    # the 2nd, which a raw count could never express.
+    second = fs.benefit_fraction(2, 2) - fs.benefit_fraction(1, 2)
+    sixth = fs.benefit_fraction(6, 2) - fs.benefit_fraction(5, 2)
+    assert second > sixth * 4
+
+
+def test_benefit_fraction_is_bounded_and_never_reaches_one():
+    assert fs.benefit_fraction(10_000, 2) < 1.0
+    assert fs.benefit_fraction(-5, 2) == 0.0
+
+
+def test_benefit_fraction_with_a_non_positive_half_value_is_all_or_nothing():
+    assert fs.benefit_fraction(1, 0) == 1.0
+    assert fs.benefit_fraction(0, 0) == 0.0
+
+
+def test_cost_credit_runs_from_full_at_zero_to_none_at_the_cap():
+    assert fs.cost_credit(0, 45) == pytest.approx(1.0)
+    assert fs.cost_credit(45, 45) == pytest.approx(0.0)
+    assert fs.cost_credit(90, 45) == pytest.approx(0.0)  # clamped, never negative
+    assert fs.cost_credit(15, 45) == pytest.approx(2 / 3)
+
+
+def test_capped_fraction_ramps_to_one_at_the_cap():
+    assert fs.capped_fraction(100, 200) == pytest.approx(0.5)
+    assert fs.capped_fraction(500, 200) == pytest.approx(1.0)
+    assert fs.capped_fraction(100, 0) == 0.0
+
+
+def test_weight_shares_normalize_to_one():
+    shares = fs.weight_shares({"a": 1.0, "b": 3.0})
+    assert shares == {"a": pytest.approx(0.25), "b": pytest.approx(0.75)}
+
+
+def test_weight_shares_clamp_negatives_and_tolerate_an_all_zero_vector():
+    assert fs.weight_shares({"a": -1.0, "b": 1.0}) == {"a": 0.0, "b": 1.0}
+    assert fs.weight_shares({"a": 0.0, "b": 0.0}) == {"a": 0.0, "b": 0.0}
+
+
+def test_noise_normalization_is_decoupled_from_the_cap():
+    # The old `min(dist, cap) / 20.0` meant raising noise_cap_m silently
+    # multiplied the noise term's influence; dividing by the cap fixes that.
+    at_cap_200 = make_scorer(parameters={"noise_cap_m": 200}).normalize_metrics(
+        dict(METRICS, noise_distance_m=200)
+    )["noise"]
+    at_cap_500 = make_scorer(parameters={"noise_cap_m": 500}).normalize_metrics(
+        dict(METRICS, noise_distance_m=500)
+    )["noise"]
+    assert at_cap_200 == pytest.approx(1.0)
+    assert at_cap_500 == pytest.approx(1.0)
+
+
 # ------------------------------------------------------------- compute_score --
 
-def test_compute_score_sums_weighted_metrics():
+def test_compute_score_is_a_weighted_average_of_normalized_metrics():
     scorer = make_scorer()
-    expected = (
-        1.0 * 2 + 2.0 * 1 + 3.0 * 3 + 4.0 * 1 + 5.0 * 4 + 6.0 * 10.0 + 7.0 * 5.0
-        - 8.0 * 60.0
-    )
+    norm = scorer.normalize_metrics(METRICS)
+    total_weight = sum(WEIGHTS.values())
+    expected = fs.SCORE_SCALE_MAX * sum(
+        WEIGHTS[key] * norm[key] for key in WEIGHTS
+    ) / total_weight
     assert scorer.compute_score(METRICS, WEIGHTS) == pytest.approx(expected)
 
 
-def test_compute_score_treats_missing_metrics_as_zero():
-    scorer = make_scorer()
-    assert scorer.compute_score({}, WEIGHTS) == pytest.approx(0.0)
+@pytest.mark.parametrize("metrics", [
+    {},
+    METRICS,
+    dict(METRICS, supermarket_count=10_000, transit_count=10_000, green_score=1e9,
+         noise_distance_m=1e6, rent_eur=0, destinations_min={"Work": 0.0}),
+    dict(METRICS, supermarket_count=0, bakery_count=0, pharmacy_count=0, gym_count=0,
+         transit_count=0, green_score=0, noise_distance_m=0, rent_eur=99_999,
+         destinations_min={"Work": 500.0}),
+])
+def test_scores_are_bounded_to_the_scale(metrics):
+    # The headline promise of normalization: no input can push the score outside
+    # 0..10, so "Score X / 10" in the GUI is finally an honest claim.
+    score = make_scorer().compute_score(metrics, WEIGHTS)
+    assert 0.0 <= score <= fs.SCORE_SCALE_MAX
 
 
-def test_rent_is_subtracted_not_added():
+def test_only_relative_weights_matter():
+    # A weighted *average* is scale-invariant, so doubling every slider is a no-op.
     scorer = make_scorer()
-    cheap = dict(METRICS, rent_time_equiv=10.0)
-    pricey = dict(METRICS, rent_time_equiv=100.0)
+    doubled = {k: v * 2 for k, v in WEIGHTS.items()}
+    assert scorer.compute_score(METRICS, doubled) == pytest.approx(
+        scorer.compute_score(METRICS, WEIGHTS)
+    )
+
+
+def test_an_all_zero_weight_vector_scores_zero_instead_of_dividing_by_zero():
+    zeroed = dict.fromkeys(WEIGHTS, 0.0)
+    assert make_scorer().compute_score(METRICS, zeroed) == pytest.approx(0.0)
+
+
+def test_negative_weights_are_clamped_rather_than_breaking_the_bounds():
+    scorer = make_scorer()
+    sneaky = dict(WEIGHTS, rent=-100.0)
+    assert 0.0 <= scorer.compute_score(METRICS, sneaky) <= fs.SCORE_SCALE_MAX
+
+
+def test_a_metric_no_longer_dominates_purely_by_having_large_units():
+    # The bug this branch exists to fix: with raw units, 12 supermarkets
+    # out-contributed the entire rent term regardless of the weights. Rent is
+    # weighted 8x supermarkets here, so it must dominate.
+    scorer = make_scorer()
+    many_shops_pricey = dict(METRICS, supermarket_count=50, rent_eur=2500)
+    no_shops_cheap = dict(METRICS, supermarket_count=0, rent_eur=0)
+    assert scorer.compute_score(no_shops_cheap, WEIGHTS) > scorer.compute_score(many_shops_pricey, WEIGHTS)
+
+
+def test_cheaper_rent_scores_higher():
+    scorer = make_scorer()
+    cheap = dict(METRICS, rent_eur=500)
+    pricey = dict(METRICS, rent_eur=2000)
     assert scorer.compute_score(cheap, WEIGHTS) > scorer.compute_score(pricey, WEIGHTS)
 
 
-def test_commute_time_is_subtracted_using_destination_config_weight():
+def test_a_longer_commute_scores_lower():
+    scorer = make_scorer(destinations={"Work": {"address": "x", "weight": 0.5}})
+    near = dict(METRICS, destinations_min={"Work": 5.0})
+    far = dict(METRICS, destinations_min={"Work": 40.0})
+    assert scorer.compute_score(near, WEIGHTS) > scorer.compute_score(far, WEIGHTS)
+
+
+def test_commute_uses_the_destination_config_weight():
     scorer = make_scorer(destinations={"Work": {"address": "x", "weight": 0.5}})
     m = dict(METRICS, destinations_min={"Work": 20.0})
-    baseline = scorer.compute_score(METRICS, WEIGHTS)
-    assert scorer.compute_score(m, WEIGHTS) == pytest.approx(baseline - 0.5 * 20.0)
+    breakdown = scorer.score_breakdown(m, WEIGHTS)
+    assert breakdown["dest_Work"]["weight"] == pytest.approx(0.5)
+    assert breakdown["dest_Work"]["normalized"] == pytest.approx(fs.cost_credit(20.0, 45.0))
 
 
 def test_explicit_dest_weight_overrides_destination_config():
     scorer = make_scorer(destinations={"Work": {"address": "x", "weight": 0.5}})
     m = dict(METRICS, destinations_min={"Work": 20.0})
     weights = dict(WEIGHTS, dest_Work=2.0)
-    baseline = scorer.compute_score(METRICS, weights)
-    assert scorer.compute_score(m, weights) == pytest.approx(baseline - 2.0 * 20.0)
+    assert scorer.score_breakdown(m, weights)["dest_Work"]["weight"] == pytest.approx(2.0)
 
 
-def test_unconfigured_destination_falls_back_to_default_weight():
+def test_unconfigured_destination_falls_back_to_the_default_weight():
     scorer = make_scorer()  # no destinations configured at all
     m = dict(METRICS, destinations_min={"Ghost": 10.0})
-    baseline = scorer.compute_score(METRICS, WEIGHTS)
-    assert scorer.compute_score(m, WEIGHTS) == pytest.approx(baseline - 0.15 * 10.0)
+    breakdown = scorer.score_breakdown(m, WEIGHTS)
+    assert breakdown["dest_Ghost"]["weight"] == pytest.approx(fs.DEFAULT_DEST_WEIGHT)
 
 
-# ------------------------------------------------------- rent_time_equivalent --
+def test_a_weight_absent_from_the_vector_falls_back_to_the_default():
+    scorer = make_scorer()
+    partial = {k: v for k, v in WEIGHTS.items() if k != "transit"}
+    assert scorer.score_breakdown(METRICS, partial)["transit"]["weight"] == pytest.approx(
+        fs.DEFAULT_WEIGHTS["transit"]
+    )
 
-def test_rent_time_equivalent_converts_euros_to_minutes():
-    assert fs.rent_time_equivalent(1200, 20) == pytest.approx(60.0)
+
+# ----------------------------------------------------------- score_breakdown --
+
+def test_breakdown_contributions_sum_to_the_score():
+    scorer = make_scorer(destinations={"Work": {"address": "x", "weight": 0.5}})
+    m = dict(METRICS, destinations_min={"Work": 20.0})
+    breakdown = scorer.score_breakdown(m, WEIGHTS)
+    assert sum(t["contribution"] for t in breakdown.values()) == pytest.approx(
+        scorer.compute_score(m, WEIGHTS)
+    )
 
 
-@pytest.mark.parametrize("euros_per_minute", [0, -5])
-def test_rent_time_equivalent_guards_against_zero_or_negative_rate(euros_per_minute):
-    assert fs.rent_time_equivalent(1200, euros_per_minute) == 0.0
+def test_breakdown_shares_sum_to_one():
+    breakdown = make_scorer().score_breakdown(METRICS, WEIGHTS)
+    assert sum(t["share"] for t in breakdown.values()) == pytest.approx(1.0)
+
+
+def test_saturation_half_values_are_configurable():
+    lenient = make_scorer(parameters={"saturation": {"supermarket": 1.0}})
+    strict = make_scorer(parameters={"saturation": {"supermarket": 10.0}})
+    m = dict(METRICS, supermarket_count=2)
+    assert lenient.normalize_metrics(m)["supermarket"] > strict.normalize_metrics(m)["supermarket"]
+    # Overriding one key must not drop the defaults for the others.
+    assert lenient.saturation["transit"] == fs.DEFAULT_SATURATION["transit"]
+
+
+def test_log_score_breakdown_reports_shares_and_contributions(capsys):
+    scorer = make_scorer()
+    scorer.log_score_breakdown({"Flat A": METRICS})
+    out = capsys.readouterr().out
+    assert "Score breakdown" in out
+    assert "TOTAL" in out
+    assert "Flat A" in out
+
+
+def test_log_score_breakdown_on_empty_metrics_is_a_no_op(capsys):
+    make_scorer().log_score_breakdown({})
+    assert capsys.readouterr().out == ""
 
 
 # ------------------------------------------------------------ _winner_margin --
@@ -120,41 +266,56 @@ def test_winner_margin_is_zero_for_an_exact_tie():
 
 # ------------------------------------------------------ run_sensitivity_check --
 
-def sensitivity_metrics(gap: float) -> dict[str, dict]:
+def sensitivity_metrics(**winner_edge) -> dict[str, dict]:
     return {
-        "Winner": dict(METRICS, supermarket_count=10),
-        "Runner-up": dict(METRICS, supermarket_count=10 - gap),
+        "Winner": dict(METRICS, **winner_edge),
+        "Runner-up": dict(METRICS),
     }
+
+
+def expected_margin(scorer: fs.FlatScorer, metrics: dict[str, dict]) -> float:
+    scores = sorted((scorer.compute_score(m, scorer.weights) for m in metrics.values()), reverse=True)
+    return scores[0] - scores[1]
 
 
 def test_sensitivity_check_reports_baseline_margin_and_stability(capsys):
     scorer = make_scorer()
-    scorer.run_sensitivity_check(sensitivity_metrics(gap=5))
+    # Transit carries ~14% of the weight, so a runaway lead on it is decisive.
+    metrics = sensitivity_metrics(transit_count=400)
+    margin = expected_margin(scorer, metrics)
+    assert margin > fs.NARROW_MARGIN_THRESHOLD
+
+    scorer.run_sensitivity_check(metrics)
     out = capsys.readouterr().out
     assert "baseline winner: Winner" in out
-    assert "Baseline margin over runner-up: 5.00 points" in out
+    assert f"Baseline margin over runner-up: {margin:.2f} points" in out
     assert "Ranking is stable" in out
     assert "winner changes!" not in out
 
 
 def test_sensitivity_check_flags_a_photo_finish(capsys):
     scorer = make_scorer()
-    scorer.run_sensitivity_check(sensitivity_metrics(gap=0.2))
+    # One extra supermarket, on the lowest-weighted term, past the point where
+    # the saturating curve has mostly flattened - a genuinely marginal win.
+    metrics = sensitivity_metrics(supermarket_count=3)
+    margin = expected_margin(scorer, metrics)
+    assert margin < fs.NARROW_MARGIN_THRESHOLD
+
+    scorer.run_sensitivity_check(metrics)
     out = capsys.readouterr().out
-    assert "Baseline margin over runner-up: 0.20 points" in out
-    # Shrinking the supermarket weight by 20% narrows the only term that
-    # separates these two, so the reported narrowest gap is 0.2 * 0.8.
-    assert "Narrowest winner/runner-up gap seen: 0.16 points" in out
+    assert f"Baseline margin over runner-up: {margin:.2f} points" in out
+    assert "Narrowest winner/runner-up gap seen:" in out
     assert "effectively tied" in out
 
 
 def test_sensitivity_check_detects_a_winner_flip(capsys):
-    # Same score overall, but earned differently: one flat wins on supermarkets,
-    # the other on transit, so nudging either weight swaps the top pick.
+    # Effectively the same score, earned differently: one flat maxes out the
+    # supermarket term, the other earns as much from a single transit stop on a
+    # 5x heavier weight. Nudging either weight swaps the top pick.
     scorer = make_scorer()
     metrics = {
-        "Groceries": dict(METRICS, supermarket_count=20, transit_count=0),
-        "Transit": dict(METRICS, supermarket_count=0, transit_count=4),
+        "Groceries": dict(METRICS, supermarket_count=100_000, transit_count=0),
+        "Transit": dict(METRICS, supermarket_count=0, transit_count=1),
     }
     scorer.run_sensitivity_check(metrics)
     out = capsys.readouterr().out
@@ -414,33 +575,42 @@ def marker_colours(html: str) -> list[str]:
     return re.findall(r'markerColor": "([a-z]+)"', html)
 
 
-def test_map_uses_the_full_colour_scale_when_scores_really_differ(tmp_path):
+@pytest.mark.parametrize("score,colour", [
+    (9.5, "green"), (7.0, "green"), (6.0, "orange"), (4.0, "orange"),
+    (3.0, "red"), (0.0, "red"),
+])
+def test_score_colour_uses_absolute_bands(score, colour):
+    assert fs.score_colour(score) == colour
+
+
+def test_map_colours_pins_by_absolute_score(tmp_path):
     out = tmp_path / "map.html"
-    make_scorer().generate_map(map_frame([30.0, 20.0, 10.0]), {}, str(out))
-    colours = marker_colours(out.read_text())
-    assert set(colours) == {"green", "orange", "red"}
+    make_scorer().generate_map(map_frame([8.0, 5.0, 2.0]), {}, str(out))
+    assert marker_colours(out.read_text()) == ["green", "orange", "red"]
 
 
-def test_map_drops_the_colour_scale_when_the_field_is_effectively_tied(tmp_path):
-    # Min-max colouring would otherwise paint a 0.2-point spread red-to-green,
-    # contradicting the sensitivity report calling the same gap a tie.
+def test_map_no_longer_stretches_a_narrow_field_across_the_whole_scale(tmp_path):
+    # The old min-max colouring painted the worst candidate red and the best
+    # green even for a 0.2-point spread, contradicting the sensitivity report
+    # calling the same gap a tie. Alike scores must now look alike.
     out = tmp_path / "map.html"
-    make_scorer().generate_map(map_frame([20.1, 20.0, 19.9]), {}, str(out))
-    html = out.read_text()
-    assert set(marker_colours(html)) == {"cadetblue"}
-    assert "pin colour carries no ranking information" in html
+    make_scorer().generate_map(map_frame([5.1, 5.0, 4.9]), {}, str(out))
+    assert set(marker_colours(out.read_text())) == {"orange"}
 
 
-def test_map_tie_notice_is_logged(tmp_path, capsys):
-    make_scorer().generate_map(map_frame([20.1, 20.0]), {}, str(tmp_path / "map.html"))
-    assert "one neutral colour" in capsys.readouterr().out
+def test_map_notes_a_narrow_field_in_the_log(tmp_path, capsys):
+    make_scorer().generate_map(map_frame([5.1, 5.0]), {}, str(tmp_path / "map.html"))
+    out = capsys.readouterr().out
+    assert "coloured by absolute score" in out
+    assert "because they are alike" in out
 
 
-def test_map_with_a_single_candidate_keeps_its_colour(tmp_path):
-    # One candidate has no spread at all, but there is no tie to warn about.
+def test_map_with_a_single_candidate_colours_it_on_the_same_absolute_scale(tmp_path):
+    # No spread to normalize against - previously that made every lone candidate
+    # red regardless of how good it was. A 9.0 is a green pin on its own.
     out = tmp_path / "map.html"
-    make_scorer().generate_map(map_frame([20.0]), {}, str(out))
-    assert marker_colours(out.read_text()) == ["red"]
+    make_scorer().generate_map(map_frame([9.0]), {}, str(out))
+    assert marker_colours(out.read_text()) == ["green"]
 
 
 # ------------------------------------------------------- geocode rate limiting --

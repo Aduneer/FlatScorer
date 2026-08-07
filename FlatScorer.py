@@ -47,8 +47,52 @@ DEFAULT_OVERPASS_MIRRORS = [
     "https://overpass.private.coffee/api",
 ]
 
-# Winner/runner-up score gap below which the top two are reported as effectively tied
-NARROW_MARGIN_THRESHOLD = 0.5
+# Scores are a weighted average of 0..1 normalized metrics, rescaled to this
+# maximum. Every score the tool produces is bounded to [0, SCORE_SCALE_MAX].
+SCORE_SCALE_MAX = 10.0
+
+# Winner/runner-up score gap below which the top two are reported as effectively
+# tied. 0.25 on the fixed 0-10 scale, i.e. 2.5% of the range - unlike the old
+# absolute threshold on an unbounded sum, this means the same thing in every run.
+NARROW_MARGIN_THRESHOLD = 0.25
+
+# Fractions of SCORE_SCALE_MAX at which map pins step from red to orange to green.
+# Absolute, so a pin's colour means the same thing in every run.
+MAP_COLOUR_BANDS = ((0.66, "green"), (0.33, "orange"), (0.0, "red"))
+
+# Default relative importance of a destination that doesn't declare one.
+DEFAULT_DEST_WEIGHT = 0.15
+
+# "More is better" metrics are mapped onto 0..1 by a saturating curve; these are
+# the half-credit points. Two supermarkets within the radius earn 0.5, four earn
+# 0.67, and so on - the 6th supermarket is worth far less than the 2nd, which is
+# closer to how people actually value amenities than a raw count is.
+DEFAULT_SATURATION = {
+    "supermarket": 2.0,
+    "bakery": 2.0,
+    "pharmacy": 1.0,
+    "gym": 1.0,
+    "transit": 4.0,
+    # green_score units: m² of green within the radius / 1000, plus 0.5 per green
+    # point feature. 30 ≈ a 30,000 m² park, or ~4% of a 500 m circle.
+    "green": 30.0,
+}
+
+# "Less is better" metrics need an absolute anchor to normalize against: the
+# value at which the term earns nothing at all.
+DEFAULT_RENT_BUDGET_EUR = 2500.0
+DEFAULT_COMMUTE_CAP_MIN = 45.0
+
+DEFAULT_WEIGHTS = {
+    "supermarket": 0.30,
+    "bakery": 0.10,
+    "pharmacy": 0.15,
+    "gym": 0.15,
+    "transit": 0.33,
+    "green": 0.05,
+    "noise": 0.05,
+    "rent": 0.25,
+}
 
 # Nominatim's usage policy caps clients at 1 request/second, and osmnx does not
 # throttle for us: https://operations.osmfoundation.org/policies/nominatim/
@@ -97,20 +141,13 @@ DEFAULT_CONFIG = {
             "color": "red"
         }
     },
-    "weights": {
-        "supermarket": 0.30,
-        "bakery": 0.10,
-        "pharmacy": 0.15,
-        "gym": 0.15,
-        "transit": 0.33,
-        "green": 0.05,
-        "noise": 0.05,
-        "rent": 0.25
-    },
+    "weights": dict(DEFAULT_WEIGHTS),
     "parameters": {
-        "euros_per_extra_minute": 20,
         "buffer_m": 500,
         "noise_cap_m": 200,
+        "rent_budget_eur": DEFAULT_RENT_BUDGET_EUR,
+        "commute_cap_min": DEFAULT_COMMUTE_CAP_MIN,
+        "saturation": dict(DEFAULT_SATURATION),
         "projected_crs": "auto",
         "show_walk_routes": True
     },
@@ -185,16 +222,52 @@ def geocode_safe(address: str, label: str, attempts: int = GEOCODE_ATTEMPTS) -> 
     return None
 
 
-def rent_time_equivalent(rent: float, euros_per_minute: float) -> float:
-    """Convert rent into the commute minutes a tenant would trade for it.
+def benefit_fraction(value: float, half_value: float) -> float:
+    """Map an unbounded "more is better" metric onto 0..1 with diminishing returns.
 
-    Puts rent on the same scale as walking time so both can be weighted together.
-    A non-positive euros-per-minute means "rent is not being traded against time",
-    so the penalty collapses to zero rather than dividing by zero.
+    `half_value` is the amount that earns half credit: 0 -> 0.0, half_value -> 0.5,
+    2x -> 0.67, 3x -> 0.75, approaching but never reaching 1.0. A non-positive
+    half_value means "any at all is full credit".
     """
-    if euros_per_minute <= 0:
+    value = max(float(value), 0.0)
+    if half_value <= 0:
+        return 1.0 if value > 0 else 0.0
+    return value / (value + float(half_value))
+
+
+def capped_fraction(value: float, cap: float) -> float:
+    """Map a metric onto 0..1 by linear ramp, clamped at `cap`."""
+    if cap <= 0:
         return 0.0
-    return rent / euros_per_minute
+    return max(0.0, min(1.0, float(value) / float(cap)))
+
+
+def cost_credit(value: float, cap: float) -> float:
+    """Map a "less is better" metric onto 0..1: full credit at 0, none at/above `cap`."""
+    return 1.0 - capped_fraction(value, cap)
+
+
+def score_colour(score: float) -> str:
+    """Map an absolute score onto a Folium marker colour."""
+    fraction = float(score) / SCORE_SCALE_MAX if SCORE_SCALE_MAX else 0.0
+    for threshold, colour in MAP_COLOUR_BANDS:
+        if fraction > threshold:
+            return colour
+    return MAP_COLOUR_BANDS[-1][1]
+
+
+def weight_shares(weights: dict[str, float]) -> dict[str, float]:
+    """Each weight's share of the total, i.e. its actual influence on the score.
+
+    Weights only ever act relative to one another (the score is a weighted
+    *average*), so this - not the raw slider value - is what a weight means.
+    An all-zero weight vector has no shares to report and yields zeros.
+    """
+    usable = {k: max(float(w), 0.0) for k, w in weights.items()}
+    total = sum(usable.values())
+    if total <= 0:
+        return dict.fromkeys(usable, 0.0)
+    return {k: w / total for k, w in usable.items()}
 
 
 def _winner_margin(scores: dict[str, float]) -> float | None:
@@ -287,9 +360,12 @@ class FlatScorer:
         self.params = config.get("parameters", {})
         self.output_config = config.get("output", {})
 
-        self.euros_per_min = self.params.get("euros_per_extra_minute", 20)
         self.buffer_m = self.params.get("buffer_m", 500)
         self.noise_cap_m = self.params.get("noise_cap_m", 200)
+        self.rent_budget_eur = self.params.get("rent_budget_eur", DEFAULT_RENT_BUDGET_EUR)
+        self.commute_cap_min = self.params.get("commute_cap_min", DEFAULT_COMMUTE_CAP_MIN)
+        # Per-metric half-credit points; a config may override any subset.
+        self.saturation = dict(DEFAULT_SATURATION, **self.params.get("saturation", {}))
         self.configured_crs = self.params.get("projected_crs", "auto")
         self.show_walk_routes = self.params.get("show_walk_routes", True)
 
@@ -314,29 +390,104 @@ class FlatScorer:
         self._log(f"[+] Auto-detected optimal projected CRS: {estimated_crs}")
         return estimated_crs
 
+    def normalize_metrics(self, m: dict[str, Any]) -> dict[str, float]:
+        """Put every raw metric on a common 0..1 scale, keyed by its weight name.
+
+        Raw metrics arrive in wildly different units - a supermarket count, m² of
+        park, euros of rent, minutes of walking - so weighting them directly meant
+        whichever term happened to have the largest magnitude dominated regardless
+        of its weight. Normalizing first is what makes the weights mean what the
+        GUI implies they mean.
+
+        Normalization is *absolute*, not min-max across the candidate set: every
+        anchor (`saturation`, `rent_budget_eur`, `commute_cap_min`, `noise_cap_m`)
+        is a configured constant, so a score means the same thing in every run and
+        doesn't shift when an unrelated candidate is added or removed.
+        """
+        norm = {
+            "supermarket": benefit_fraction(m.get("supermarket_count", 0), self.saturation["supermarket"]),
+            "bakery":      benefit_fraction(m.get("bakery_count", 0), self.saturation["bakery"]),
+            "pharmacy":    benefit_fraction(m.get("pharmacy_count", 0), self.saturation["pharmacy"]),
+            "gym":         benefit_fraction(m.get("gym_count", 0), self.saturation["gym"]),
+            "transit":     benefit_fraction(m.get("transit_count", 0), self.saturation["transit"]),
+            "green":       benefit_fraction(m.get("green_score", 0.0), self.saturation["green"]),
+            # Further from a busy road is quieter, up to the cap beyond which extra
+            # distance buys nothing. Dividing by the cap (rather than a magic 20.0)
+            # is what stops raising the cap from silently inflating noise's weight.
+            "noise":       capped_fraction(m.get("noise_distance_m", 0.0), self.noise_cap_m),
+            "rent":        cost_credit(m.get("rent_eur", 0.0), self.rent_budget_eur),
+        }
+        for dest_name, mins in m.get("destinations_min", {}).items():
+            norm[f"dest_{dest_name}"] = cost_credit(mins, self.commute_cap_min)
+        return norm
+
+    def _resolve_weight(self, key: str, weights: dict[str, float]) -> float:
+        """Look up a term's weight, falling back through the config to the defaults.
+
+        Destination weights live in `destinations`, but an explicit `dest_<name>`
+        entry in `weights` overrides it - that is how the sensitivity check nudges
+        them. Negative weights are clamped to zero: a weighted average of 0..1
+        values only stays inside 0..1 if no weight pulls the other way.
+        """
+        if key.startswith("dest_"):
+            if key in weights:
+                weight = weights[key]
+            else:
+                dest_name = key[len("dest_"):]
+                weight = self.destinations_config.get(dest_name, {}).get("weight", DEFAULT_DEST_WEIGHT)
+        else:
+            weight = weights.get(key, DEFAULT_WEIGHTS.get(key, 0.0))
+        return max(float(weight), 0.0)
+
+    def score_breakdown(self, m: dict[str, Any], weights: dict[str, float]) -> dict[str, dict[str, float]]:
+        """Per-term weight, influence share, normalized value and points contributed.
+
+        The contributions sum to exactly the value `compute_score` returns, which
+        makes it possible to answer "why did this flat win?" rather than just
+        "this flat won".
+        """
+        norm = self.normalize_metrics(m)
+        resolved = {key: self._resolve_weight(key, weights) for key in norm}
+        shares = weight_shares(resolved)
+        return {
+            key: {
+                "weight": resolved[key],
+                "share": shares[key],
+                "normalized": value,
+                "contribution": SCORE_SCALE_MAX * shares[key] * value,
+            }
+            for key, value in norm.items()
+        }
+
     def compute_score(self, m: dict[str, Any], weights: dict[str, float]) -> float:
-        """Calculate total score based on metrics dictionary and weight vector."""
-        score = (
-            weights.get("supermarket", 0.30) * m.get("supermarket_count", 0)
-            + weights.get("bakery", 0.10) * m.get("bakery_count", 0)
-            + weights.get("pharmacy", 0.15) * m.get("pharmacy_count", 0)
-            + weights.get("gym", 0.15) * m.get("gym_count", 0)
-            + weights.get("transit", 0.33) * m.get("transit_count", 0)
-            + weights.get("green", 0.05) * m.get("green_score", 0)
-            + weights.get("noise", 0.05) * m.get("noise_benefit", 0)
-            - weights.get("rent", 0.25) * m.get("rent_time_equiv", 0)
+        """Score a candidate on a fixed 0..SCORE_SCALE_MAX scale.
+
+        A weighted average of the normalized metrics: every term sits in 0..1 and
+        the weights are normalized to sum to 1, so the result is genuinely bounded
+        - unlike the old raw weighted sum, which subtracted unbounded rent and
+        commute terms and could land anywhere from negative to 40+.
+        """
+        return sum(term["contribution"] for term in self.score_breakdown(m, weights).values())
+
+    def log_score_breakdown(self, metrics_by_name: dict[str, dict[str, Any]]):
+        """Print each term's influence share and what it contributed to every candidate."""
+        if not metrics_by_name:
+            return
+        breakdowns = {n: self.score_breakdown(m, self.weights) for n, m in metrics_by_name.items()}
+        first = next(iter(breakdowns.values()))
+        table = pd.DataFrame(
+            {"share": {k: f"{v['share'] * 100:.1f}%" for k, v in first.items()}}
+            | {
+                name: {k: round(v["contribution"], 2) for k, v in bd.items()}
+                for name, bd in breakdowns.items()
+            }
         )
-
-        # Subtract weighted destination walk times
-        dest_times = m.get("destinations_min", {})
-        for dest_name, mins in dest_times.items():
-            dest_weight = self.destinations_config.get(dest_name, {}).get("weight", 0.15)
-            # Check if custom weight for destination is specified in weights dict
-            if f"dest_{dest_name}" in weights:
-                dest_weight = weights[f"dest_{dest_name}"]
-            score -= dest_weight * mins
-
-        return score
+        table.loc["TOTAL"] = ["100.0%"] + [
+            round(sum(v["contribution"] for v in bd.values()), 2) for bd in breakdowns.values()
+        ]
+        self._log(f"\nScore breakdown (points out of {SCORE_SCALE_MAX:.0f}, "
+                  "'share' is each weight's influence after normalization):")
+        self._log(table.to_string())
 
     def run_sensitivity_check(self, metrics_by_name: dict[str, dict[str, Any]], perturb: float = 0.2):
         """Run sensitivity analysis by nudging weights by +/- perturb% and observing winner stability."""
@@ -385,7 +536,8 @@ class FlatScorer:
         if narrowest_margin is not None:
             self._log(f"Narrowest winner/runner-up gap seen: {narrowest_margin:.2f} points")
             if narrowest_margin < NARROW_MARGIN_THRESHOLD:
-                self._log(f"[!] That is under {NARROW_MARGIN_THRESHOLD:.1f} points - the top two are effectively tied; "
+                self._log(f"[!] That is under {NARROW_MARGIN_THRESHOLD:.2f} points on a "
+                          f"0-{SCORE_SCALE_MAX:.0f} scale - the top two are effectively tied; "
                           "treat the ranking as a toss-up rather than a clear winner.")
 
     def run(self) -> pd.DataFrame:
@@ -488,7 +640,6 @@ class FlatScorer:
             green_area_m2, green_points = green_area_and_points(lat, lon, green_p, projected_crs, dist=self.buffer_m)
             dist_to_busy_road = nearest_distance_m(lat, lon, roads_p, projected_crs)
             effective_road_dist = dist_to_busy_road if dist_to_busy_road is not None else self.noise_cap_m
-            noise_benefit = min(effective_road_dist, self.noise_cap_m) / 20.0
 
             dest_times = {}
             dest_routes = {}
@@ -506,9 +657,9 @@ class FlatScorer:
                 "gym_count":         count_nearby(lat, lon, gyms_p, projected_crs, dist=self.buffer_m),
                 "transit_count":     count_nearby(lat, lon, transit_p, projected_crs, dist=self.buffer_m),
                 "green_score":       green_area_m2 / 1000.0 + green_points * 0.5,
-                "noise_benefit":     noise_benefit,
+                "noise_distance_m":  effective_road_dist,
                 "destinations_min":  dest_times,
-                "rent_time_equiv":   rent_time_equivalent(rent, self.euros_per_min),
+                "rent_eur":          rent,
             }
             metrics_by_name[name] = m
             score = self.compute_score(m, self.weights)
@@ -535,7 +686,10 @@ class FlatScorer:
             rows.append(row)
 
         df = pd.DataFrame(rows).sort_values("score", ascending=False)
-        self._log("\n" + df.drop(columns=["lat", "lon"]).to_string(index=False))
+        self._log(f"\nScores are on a fixed 0-{SCORE_SCALE_MAX:.0f} scale and are comparable across runs.")
+        self._log(df.drop(columns=["lat", "lon"]).to_string(index=False))
+
+        self.log_score_breakdown(metrics_by_name)
 
         csv_file = self.output_config.get("csv_file", "apartment_scores.csv")
         df.to_csv(csv_file, index=False)
@@ -570,26 +724,23 @@ class FlatScorer:
                 icon=folium.Icon(color=icon_color, icon=icon_name, prefix="fa"),
             ).add_to(m_map)
 
-        max_score, min_score = df["score"].max(), df["score"].min()
-        score_spread = float(max_score - min_score)
-        score_range = score_spread if (max_score != min_score) else 1.0
+        score_spread = float(df["score"].max() - df["score"].min())
 
-        # Min-max colouring always paints the worst candidate red and the best
-        # green, even when the whole set is a photo finish. Below the same
-        # threshold the sensitivity check calls a tie, drop the colour scale
-        # entirely rather than inventing a contrast the scores don't support.
-        scores_are_tied = len(df) > 1 and score_spread < NARROW_MARGIN_THRESHOLD
-        if scores_are_tied:
-            self._log(f"[i] Candidate scores span only {score_spread:.2f} points "
-                      f"(under {NARROW_MARGIN_THRESHOLD:.1f}) - map pins are shown in one neutral colour "
-                      "instead of a red-to-green scale.")
+        # Pins are coloured by absolute score, not by rank within the set. The old
+        # min-max stretch always painted the worst candidate red and the best
+        # green - even for a 0.1-point spread, which contradicted the sensitivity
+        # report calling the same gap a tie. Now the scale is real, so two flats
+        # that score alike simply get the same colour, and a set of mediocre flats
+        # is allowed to be uniformly orange.
+        self._log(f"[i] Map pins are coloured by absolute score: green above "
+                  f"{MAP_COLOUR_BANDS[0][0] * SCORE_SCALE_MAX:.1f}, orange above "
+                  f"{MAP_COLOUR_BANDS[1][0] * SCORE_SCALE_MAX:.1f}, red below.")
+        if len(df) > 1 and score_spread < NARROW_MARGIN_THRESHOLD:
+            self._log(f"[i] All candidates score within {score_spread:.2f} points of each other - "
+                      "expect the pins to look alike, because they are alike.")
 
         for _, row in df.iterrows():
-            if scores_are_tied:
-                color = "cadetblue"
-            else:
-                frac = (row["score"] - min_score) / (score_range + 1e-9)
-                color = "green" if frac > 0.66 else "orange" if frac > 0.33 else "red"
+            color = score_colour(row["score"])
 
             dest_lines = []
             for col in df.columns:
@@ -600,7 +751,7 @@ class FlatScorer:
 
             popup = (
                 f"<b>{row['name']}</b><br>"
-                f"Score: {row['score']}<br>"
+                f"Score: {row['score']} / {SCORE_SCALE_MAX:.0f}<br>"
                 f"Rent: €{row['rent_eur']}<br>"
                 f"Commute: {dest_html}<br>"
                 f"Supermarkets: {row['supermarkets']} | Bakeries: {row['bakeries']}<br>"
@@ -609,12 +760,9 @@ class FlatScorer:
                 f"Green area nearby: {row['green_area_m2']} m²<br>"
                 f"Distance to busy road: {row['dist_busy_road_m']} m"
             )
-            if scores_are_tied:
-                popup += (f"<br><i>All candidates score within {score_spread:.2f} points - "
-                          "pin colour carries no ranking information here.</i>")
             folium.Marker(
                 [row["lat"], row["lon"]],
-                tooltip=f"{row['name']} — Score: {row['score']}",
+                tooltip=f"{row['name']} — Score: {row['score']} / {SCORE_SCALE_MAX:.0f}",
                 popup=popup,
                 icon=folium.Icon(color=color, icon="home", prefix="fa"),
             ).add_to(m_map)

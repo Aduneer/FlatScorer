@@ -93,34 +93,54 @@ For each candidate apartment, FlatScorer:
 5. **Estimates noise exposure** via distance to the nearest primary/secondary road.
 6. **Routes walking commutes** to each of your defined destinations over the
    real pedestrian network (~5 km/h).
-7. **Converts rent** into a time-equivalent penalty so it can be compared
-   against commute minutes on the same scale.
-8. **Computes a weighted score** from all of the above.
+7. **Normalizes every metric** onto a common 0–1 scale.
+8. **Computes a weighted average** of those normalized values, on a 0–10 scale.
 
 ### Reading the score
 
-The score is a plain weighted sum — amenity, transit, green and noise terms are
-added, rent and commute terms are subtracted:
+Every metric is first mapped onto 0–1, then combined as a weighted average and
+rescaled to 0–10:
 
 ```
-score =   w_supermarket * supermarkets + w_bakery * bakeries
-        + w_pharmacy * pharmacies      + w_gym * gyms
-        + w_transit * transit_stops    + w_green * green_score
-        + w_noise * noise_benefit
-        - w_rent * (rent / euros_per_extra_minute)
-        - Σ (destination weight × walking minutes to that destination)
+score = 10 × Σ (wᵢ × normalizedᵢ) / Σ wᵢ
 ```
 
-**It is not on a 0–10 scale.** Nothing bounds it: an expensive flat with a long
-commute can score negative, and a well-served one can land well above 10. Scores
-are only meaningful *relative to the other candidates in the same run* — compare
-the gaps, not the absolute numbers. The sensitivity report prints the gap between
-the top two, and if that gap is under 0.5 points the map drops its red-to-green
-pin colouring, since the ranking isn't distinguishing them at that resolution.
+| Term | Normalized as | Anchor (configurable) |
+|---|---|---|
+| supermarket, bakery, pharmacy, gym, transit | `count / (count + half)` — saturating | `saturation.<metric>` |
+| green | same curve over `green_score` (m² / 1000 + 0.5 per point feature) | `saturation.green` |
+| noise | `min(distance, cap) / cap` | `noise_cap_m` |
+| rent | `1 − rent / budget`, clamped to 0 | `rent_budget_eur` |
+| each destination | `1 − minutes / cap`, clamped to 0 | `commute_cap_min` |
 
-Because the terms are raw counts and euros rather than normalized values, the
-weights are not directly comparable to each other either — a 12-supermarket
-district contributes more raw score than the whole rent term.
+**The 0–10 scale is real.** Every term is bounded and the weights are normalized
+to sum to 1, so no input can push a score outside 0–10 — and because the anchors
+are absolute constants rather than the candidate set's own min and max, a score
+means the same thing in every run. Two runs a month apart are comparable.
+
+Three consequences worth knowing:
+
+- **Only the relative sizes of weights matter.** Doubling every slider changes
+  nothing. A weight's real meaning is its *share* of the total, which is the most
+  points out of 10 that term can contribute — the GUI's Weights page shows this
+  share for every factor, destinations included.
+- **Destination weights compete in the same pool** as the amenity weights, rather
+  than being points-per-minute penalties.
+- **Amenities have diminishing returns.** With `saturation.supermarket: 2`, the
+  first supermarket within the radius is worth far more than the sixth. This is
+  deliberate: a raw count let a well-mapped district out-score everything else on
+  supermarkets alone.
+
+The sensitivity report prints the gap between the top two; under 0.25 points they
+are reported as effectively tied. Map pins are coloured by absolute score (green
+above 6.6, orange above 3.3, red below), so a pin colour also means the same
+thing in every run — and a field of similar flats is allowed to look similar.
+
+> **Migrating from a pre-normalization config:** scores from older versions are
+> not comparable to these. `euros_per_extra_minute` is gone (rent is no longer
+> converted to commute-minutes); set `rent_budget_eur` to the most you would pay
+> instead. Old configs still load — the removed key is simply ignored and the new
+> anchors fall back to their defaults.
 
 ### Output
 
@@ -151,13 +171,14 @@ Everything is driven by a single JSON file. Generate a template with
   "destinations": {
     "Office": {
       "address": "Alexanderplatz 1, 10178 Berlin, Germany",
-      "weight": 0.20,        // importance in the score
+      "weight": 0.20,        // importance, relative to the weights below
       "icon": "briefcase",   // FontAwesome icon on the map
       "color": "blue"
     }
   },
 
-  // How much each factor matters (higher = more important)
+  // How much each factor matters, relative to the others. Only the ratios
+  // count — these are normalized to sum to 100% before scoring.
   "weights": {
     "supermarket": 0.30,
     "bakery":      0.10,
@@ -170,9 +191,14 @@ Everything is driven by a single JSON file. Generate a template with
   },
 
   "parameters": {
-    "euros_per_extra_minute": 20,  // rent-to-time tradeoff (€20 ≈ 1 min)
     "buffer_m": 500,               // amenity search radius in meters
-    "noise_cap_m": 200,            // noise benefit caps at this distance
+    "noise_cap_m": 200,            // quiet term maxes out at this distance from a busy road
+    "rent_budget_eur": 2500,       // rent at/above this scores 0 on the rent term
+    "commute_cap_min": 45,         // a walk this long scores 0 for that destination
+    "saturation": {                // count earning half credit (diminishing returns)
+      "supermarket": 2, "bakery": 2, "pharmacy": 1,
+      "gym": 1, "transit": 4, "green": 30
+    },
     "projected_crs": "auto",       // auto-detect UTM zone, or e.g. "EPSG:25832"
     "show_walk_routes": true       // draw predicted walking routes on the map by default
   },
@@ -186,17 +212,31 @@ Everything is driven by a single JSON file. Generate a template with
 
 ### Key parameters explained
 
-- **`euros_per_extra_minute`** — The rent/commute tradeoff ratio. A value of 20
-  means "€100/month cheaper rent is worth about 5 minutes extra walk each way."
-  Increase if rent matters more to you; decrease if commute does.
+- **`rent_budget_eur`** — The rent you consider unaffordable. Rent at or above it
+  scores 0 on the rent term, free rent scores 1, and everything in between is
+  linear. Set it to the top of your budget; setting it far above your actual
+  range flattens the differences between candidates.
+
+- **`commute_cap_min`** — The walk length at which a destination stops earning
+  anything. Same shape as the rent term, including the same tradeoff: everything
+  past the cap scores 0, so a 50-minute walk and a 90-minute walk are
+  indistinguishable on that term. If the score breakdown shows a destination at
+  0.00 for every candidate, raise the cap (or accept that nobody is walking
+  there). Both anchors are deliberately absolute — that is what makes a score
+  mean the same thing between runs.
+
+- **`saturation`** — The count that earns half credit for each amenity, i.e. how
+  quickly more of something stops helping. Lower is easier to satisfy: at
+  `supermarket: 1`, a single supermarket already earns half the term.
 
 - **`projected_crs`** — Coordinate reference system for metric distance
   calculations. `"auto"` picks the correct UTM zone for your region. Override
   with an EPSG code if you have a preference.
 
-- **Destination `weight`** — Controls how heavily each destination's walking
-  time penalises the score. A weight of 0.15 on a 40-minute walk subtracts 6
-  points; at 0.30 it would subtract 12.
+- **Destination `weight`** — How much this commute matters relative to every
+  other factor. It competes in the same pool as the amenity weights, so a
+  destination at 0.15 against weights totalling 1.5 controls 10% of the score —
+  at most 1 point out of 10, earned by living next door to it.
 
 - **`show_walk_routes`** — Whether the map's "Predicted walking routes" layer
   starts visible. The routes trace each candidate's actual shortest path over
@@ -258,10 +298,11 @@ pytest          # offline test suite — no Overpass, no Nominatim
 ruff check .
 ```
 
-The tests cover the scoring maths (`compute_score`, the sensitivity check, the
-rent→time conversion), the spatial helpers, geocode throttling/retry, map pin
-colouring, and the Streamlit `data_editor` state handling via
-`streamlit.testing`. Both `pytest` and `ruff check` gate CI.
+The tests cover the scoring maths (metric normalization, `compute_score`'s 0–10
+bounds under extreme inputs, the score breakdown, the sensitivity check), the
+spatial helpers, geocode throttling/retry, map pin colouring, and the Streamlit
+`data_editor` state handling via `streamlit.testing`. Both `pytest` and
+`ruff check` gate CI.
 
 ## Data & Attribution
 

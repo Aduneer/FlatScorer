@@ -17,6 +17,7 @@ modify any scoring logic, so behavior always matches the CLI tool exactly.
 from __future__ import annotations
 
 import contextlib
+import copy
 import io
 import json
 import os
@@ -26,7 +27,14 @@ from typing import Any
 import pandas as pd
 import streamlit as st
 
-from FlatScorer import DEFAULT_CONFIG, NARROW_MARGIN_THRESHOLD, FlatScorer
+from FlatScorer import (
+    DEFAULT_CONFIG,
+    DEFAULT_DEST_WEIGHT,
+    NARROW_MARGIN_THRESHOLD,
+    SCORE_SCALE_MAX,
+    FlatScorer,
+    weight_shares,
+)
 
 st.set_page_config(
     page_title="FlatScorer — Apartment Scoring Tool",
@@ -72,7 +80,9 @@ def _init_state():
     st.session_state.destinations_df = pd.DataFrame(dest_rows)
 
     st.session_state.weights = dict(DEFAULT_WEIGHTS)
-    st.session_state.params = dict(DEFAULT_PARAMS)
+    # Deep copy: `params` nests the saturation dict, and a shallow copy would let
+    # the widgets edit the module-level default in place.
+    st.session_state.params = copy.deepcopy(DEFAULT_PARAMS)
 
 
 def _editor_baseline(state_key: str, editor_key: str) -> pd.DataFrame:
@@ -116,7 +126,12 @@ def _load_config_into_state(config: dict[str, Any]):
     st.session_state.destinations_df = pd.DataFrame(dest_rows)
 
     st.session_state.weights = dict(DEFAULT_WEIGHTS, **config.get("weights", {}))
-    st.session_state.params = dict(DEFAULT_PARAMS, **config.get("parameters", {}))
+    loaded_params = config.get("parameters", {})
+    params = copy.deepcopy(DEFAULT_PARAMS) | {k: v for k, v in loaded_params.items() if k != "saturation"}
+    # Merge saturation rather than replacing it, so a config that overrides one
+    # half-credit point doesn't drop the defaults for the other five.
+    params["saturation"] = dict(DEFAULT_PARAMS["saturation"], **loaded_params.get("saturation", {}))
+    st.session_state.params = params
 
 
 def _build_config() -> dict[str, Any]:
@@ -648,7 +663,8 @@ elif selected_nav.startswith("📍"):
             "address": st.column_config.TextColumn("Address", required=True, width="large"),
             "weight": st.column_config.NumberColumn(
                 "Importance Weight", min_value=0.0, max_value=2.0, step=0.05,
-                help="Points subtracted per minute of walking time.",
+                help="Relative importance of this commute, competing in the same pool as the "
+                     "amenity weights. See the influence table on the Weights page.",
             ),
             "icon": st.column_config.SelectboxColumn("Map Icon", options=ICON_CHOICES),
             "color": st.column_config.SelectboxColumn("Map Color", options=COLOR_CHOICES),
@@ -663,7 +679,10 @@ elif selected_nav.startswith("⚖️"):
         <div class="fs-card">
             <div class="fs-card-title">⚖️ Scoring Weights</div>
             <div class="fs-card-desc">
-                Adjust how much each proximity factor impacts the final score. Higher values mean greater importance.
+                Adjust how much each factor matters. Only the <em>relative</em> sizes count —
+                every metric is normalized to 0–1 before weighting, and the weights are
+                rescaled to sum to 100%, so doubling every slider changes nothing.
+                The influence table below shows what each weight is actually worth.
             </div>
         </div>
         """,
@@ -693,14 +712,85 @@ elif selected_nav.startswith("⚖️"):
                 key=f"weight_{key}",
             )
 
+    with st.expander("🎚️ Amenity saturation — how fast each count stops helping", expanded=False):
+        st.caption(
+            "The count that earns half credit. Amenities have diminishing returns: with "
+            "a half-credit point of 2, the first supermarket is worth far more than the sixth. "
+            "Lower = easier to satisfy."
+        )
+        sat = st.session_state.params.setdefault("saturation", copy.deepcopy(DEFAULT_PARAMS["saturation"]))
+        sat_labels = {
+            "supermarket": "🛒 Supermarkets",
+            "bakery": "🥖 Bakeries",
+            "pharmacy": "💊 Pharmacies",
+            "gym": "🏋️ Gyms",
+            "transit": "🚌 Transit stops",
+            "green": "🌳 Green score (m²/1000 + 0.5/point)",
+        }
+        s_cols = st.columns(3)
+        for i, (key, label) in enumerate(sat_labels.items()):
+            with s_cols[i % 3]:
+                sat[key] = st.number_input(
+                    label,
+                    min_value=0.1,
+                    value=float(sat.get(key, DEFAULT_PARAMS["saturation"][key])),
+                    step=0.5,
+                    key=f"saturation_{key}",
+                )
+
+    # Weights only act relative to one another, and destination weights compete in
+    # the same pool — so a slider's number on its own says nothing about influence.
+    combined = {key: float(st.session_state.weights.get(key, 0.0)) for key in weight_labels}
+    dest_labels = {}
+    for _, row in st.session_state.destinations_df.iterrows():
+        dest_name = str(row.get("name", "")).strip()
+        if not dest_name:
+            continue
+        combined[f"dest_{dest_name}"] = float(row.get("weight", DEFAULT_DEST_WEIGHT) or 0.0)
+        dest_labels[f"dest_{dest_name}"] = f"🚶 Commute to {dest_name}"
+
+    shares = weight_shares(combined)
+    if sum(combined.values()) <= 0:
+        st.warning("⚠️ Every weight is zero — with nothing to weigh, all candidates score 0.")
+    else:
+        st.markdown("#### Influence share")
+        st.caption(
+            f"Each factor's share of the total weight — i.e. the most points out of "
+            f"{SCORE_SCALE_MAX:.0f} it can contribute. Destination weights (set on the "
+            "Destinations page) compete in the same pool."
+        )
+        share_df = pd.DataFrame(
+            [
+                {
+                    "Factor": {**weight_labels, **dest_labels}[key],
+                    "Weight": round(combined[key], 3),
+                    "Share": shares[key],
+                    "Max points": round(shares[key] * SCORE_SCALE_MAX, 2),
+                }
+                for key in sorted(combined, key=lambda k: -shares[k])
+            ]
+        )
+        st.dataframe(
+            share_df,
+            width="stretch",
+            hide_index=True,
+            column_config={
+                "Share": st.column_config.ProgressColumn(
+                    "Share of score", format="%.1f%%", min_value=0.0, max_value=float(max(shares.values())),
+                ),
+            },
+        )
+
     st.markdown("<div style='height: 16px;'></div>", unsafe_allow_html=True)
 
     st.markdown(
         """
         <div class="fs-card">
-            <div class="fs-card-title">⚙️ Algorithm & Spatial Parameters</div>
+            <div class="fs-card-title">⚙️ Scoring Anchors & Spatial Parameters</div>
             <div class="fs-card-desc">
-                Fine-tune evaluation radii, CRS projections, and economic tradeoffs.
+                These set what "full marks" means for each metric. They are absolute,
+                not relative to the candidate set, which is what keeps a score
+                comparable between runs — change one and every score moves.
             </div>
         </div>
         """,
@@ -709,32 +799,42 @@ elif selected_nav.startswith("⚖️"):
 
     p1, p2, p3, p4 = st.columns(4)
     with p1:
-        st.session_state.params["euros_per_extra_minute"] = st.number_input(
-            "€ per extra commute min",
+        st.session_state.params["rent_budget_eur"] = st.number_input(
+            "Rent budget (€/month)",
             min_value=1,
-            value=int(st.session_state.params.get("euros_per_extra_minute", 20)),
-            help="€100/month cheaper rent ≈ this many extra minutes of walking.",
+            value=int(st.session_state.params.get("rent_budget_eur", DEFAULT_PARAMS["rent_budget_eur"])),
+            step=50,
+            help="Rent at or above this scores 0 on the rent term; free rent scores 1. Set it to the most you would pay.",
         )
     with p2:
+        st.session_state.params["commute_cap_min"] = st.number_input(
+            "Commute cap (min)",
+            min_value=1,
+            value=int(st.session_state.params.get("commute_cap_min", DEFAULT_PARAMS["commute_cap_min"])),
+            step=5,
+            help="A walk this long (or longer) to a destination scores 0; arriving instantly scores 1.",
+        )
+    with p3:
         st.session_state.params["buffer_m"] = st.number_input(
             "Amenity radius (m)",
             min_value=50,
             value=int(st.session_state.params.get("buffer_m", 500)),
             step=50,
         )
-    with p3:
+    with p4:
         st.session_state.params["noise_cap_m"] = st.number_input(
             "Noise benefit cap (m)",
             min_value=50,
             value=int(st.session_state.params.get("noise_cap_m", 200)),
             step=50,
+            help="Distance from a busy road at which the quiet term maxes out. Raising it no longer inflates noise's influence — the term is scaled by the cap.",
         )
-    with p4:
-        st.session_state.params["projected_crs"] = st.text_input(
-            "Projected CRS",
-            value=st.session_state.params.get("projected_crs", "auto"),
-            help="'auto' picks the correct UTM zone, or provide EPSG code (e.g. EPSG:25832).",
-        )
+
+    st.session_state.params["projected_crs"] = st.text_input(
+        "Projected CRS",
+        value=st.session_state.params.get("projected_crs", "auto"),
+        help="'auto' picks the correct UTM zone, or provide EPSG code (e.g. EPSG:25832).",
+    )
 
     st.session_state.params["show_walk_routes"] = st.checkbox(
         "Show predicted walking routes on map by default",
@@ -830,9 +930,8 @@ elif selected_nav.startswith("🚀"):
                 top_score = top_row["score"]
                 top_name = top_row.get("name", "Top Option")
 
-                # The score is an unbounded weighted sum with rent and commute
-                # subtracted - it has no ceiling and can go negative, so state the
-                # margin over the runner-up instead of implying a 0-10 scale.
+                # The score is a weighted average of normalized metrics, so the
+                # 0-10 scale is real: bounded, and comparable between runs.
                 margin = float(top_score - df.iloc[1]["score"]) if len(df) > 1 else None
                 if margin is None:
                     sub_text = "Only candidate scored — nothing to compare against"
@@ -847,11 +946,12 @@ elif selected_nav.startswith("🚀"):
                         <div class="fs-stamp">
                             <span class="fs-stamp-label">Top Pick</span>
                             <span class="fs-stamp-score">{top_score:.2f}</span>
+                            <span class="fs-stamp-label">out of {SCORE_SCALE_MAX:.0f}</span>
                         </div>
                         <div>
                             <div class="fs-winner-eyebrow">🏆 Recommended Match</div>
                             <div class="fs-winner-name">{top_name}</div>
-                            <div class="fs-winner-sub">Score {top_score:.2f} — {sub_text}</div>
+                            <div class="fs-winner-sub">Score {top_score:.2f} / {SCORE_SCALE_MAX:.0f} — {sub_text}</div>
                         </div>
                     </div>
                     """,

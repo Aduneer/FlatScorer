@@ -101,3 +101,38 @@ def test_edited_rent_reaches_the_config_handed_to_the_scorer():
         config = streamlit_app._build_config()
 
     assert config["candidates"][0]["rent"] == 999
+
+
+def test_weights_page_carries_the_normalization_anchors_into_the_config():
+    app = fresh_app()
+    app.session_state["main_nav_radio"] = WEIGHTS
+    app.run()
+    assert not app.exception, app.exception
+
+    import streamlit_app
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(streamlit_app.st, "session_state", app.session_state)
+        params = streamlit_app._build_config()["parameters"]
+
+    assert params["rent_budget_eur"] > 0
+    assert params["commute_cap_min"] > 0
+    assert set(params["saturation"]) == set(streamlit_app.DEFAULT_PARAMS["saturation"])
+
+
+def test_editing_a_saturation_widget_does_not_mutate_the_module_default():
+    # `params` nests a dict, so a shallow copy of DEFAULT_PARAMS would let the
+    # widgets rewrite the built-in defaults for the rest of the process.
+    import streamlit_app
+    from FlatScorer import DEFAULT_SATURATION
+
+    app = fresh_app()
+    app.session_state["main_nav_radio"] = WEIGHTS
+    app.run()
+    app.session_state["saturation_transit"] = 99.0
+    app.run()
+
+    assert not app.exception, app.exception
+    assert app.session_state.params["saturation"]["transit"] == 99.0
+    assert streamlit_app.DEFAULT_PARAMS["saturation"]["transit"] == DEFAULT_SATURATION["transit"]
+    assert DEFAULT_SATURATION["transit"] != 99.0
