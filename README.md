@@ -107,14 +107,41 @@ For each candidate apartment, FlatScorer:
 1. **Geocodes** all addresses via Nominatim (through OSMnx).
 2. **Downloads** the walking street network and points of interest for the
    bounding region from the Overpass API (with automatic mirror failover).
-3. **Counts nearby amenities** within a configurable radius (default 500 m):
+3. **Deduplicates POIs** mapped both as a node and as a building outline
+   (see [Duplicate POIs](#duplicate-pois)).
+4. **Counts nearby amenities** within a configurable radius (default 500 m):
    supermarkets, bakeries, pharmacies, gyms, bus/tram stops.
-4. **Measures green space** — park and forest polygon area plus point features.
-5. **Estimates noise exposure** via distance to the nearest primary/secondary road.
-6. **Routes walking commutes** to each of your defined destinations over the
+5. **Measures green space** — park and forest polygon area plus point features.
+6. **Estimates noise exposure** via distance to the nearest primary/secondary road.
+7. **Routes walking commutes** to each of your defined destinations over the
    real pedestrian network (~5 km/h).
-7. **Normalizes every metric** onto a common 0–1 scale.
-8. **Computes a weighted average** of those normalized values, on a 0–10 scale.
+8. **Normalizes every metric** onto a common 0–1 scale.
+9. **Computes a weighted average** of those normalized values, on a 0–10 scale.
+
+### Duplicate POIs
+
+OpenStreetMap frequently maps one real place twice — a supermarket tagged on a
+POI node *and* on the building outline around it. Overpass returns both, so a
+naive count sees two supermarkets where a shopper sees one.
+
+This matters more than it sounds. The duplication isn't uniform: it's most
+common where mapping is most thorough, which tends to be central, dense,
+well-surveyed neighbourhoods. Left alone it hands those areas an amenity bonus
+they haven't earned — inflating exactly the places that were already scoring
+well, which is the wrong direction for a comparison tool.
+
+FlatScorer merges a node and an area into one feature when the area's geometry
+comes within `poi_dedupe_tolerance_m` of the node and their `name` tags don't
+disagree (an unnamed building still merges with a named node, which is the usual
+shape of the duplicate). For amenity counts the node survives; for green space
+the polygon survives, because it carries the m² the green score is made of.
+
+Two nodes are **never** merged with each other. Bus stops legitimately come in
+pairs a few meters apart on opposite sides of a road, and collapsing those would
+be the same inflation bug pointing the other way.
+
+Every merge is reported in the run log, so the numbers behind a score stay
+auditable.
 
 ### Reading the score
 
@@ -249,6 +276,14 @@ Everything is driven by a single JSON file. Generate a template with
   quickly more of something stops helping. Lower is easier to satisfy: at
   `supermarket: 1`, a single supermarket already earns half the term.
 
+- **`poi_dedupe_tolerance_m`** — How close a POI node and a building outline have
+  to be before they're treated as one real-world place mapped twice (see
+  [Duplicate POIs](#duplicate-pois) below). Distance is measured to the building's
+  geometry rather than its centroid, so a node anywhere *inside* the building
+  already counts as 0 m and this only has to absorb nodes placed just outside a
+  wall. Raise it and genuinely distinct neighbouring shops start merging; 0
+  merges only nodes that fall exactly on the outline.
+
 - **`projected_crs`** — Coordinate reference system for metric distance
   calculations. `"auto"` picks the correct UTM zone for your region. Override
   with an EPSG code if you have a preference.
@@ -354,7 +389,7 @@ directory, so `[tool.setuptools] py-modules` lists them explicitly.
 
 The tests cover the scoring maths (metric normalization, `compute_score`'s 0–10
 bounds under extreme inputs, the score breakdown, the sensitivity check), config
-validation, the spatial helpers, geocode throttling/retry, map pin colouring, and
+validation, POI deduplication, the spatial helpers, geocode throttling/retry, map pin colouring, and
 the Streamlit `data_editor` state handling via `streamlit.testing`. Both `pytest`
 and `ruff check` gate CI.
 

@@ -84,6 +84,14 @@ DEFAULT_SATURATION = {
 DEFAULT_RENT_BUDGET_EUR = 2500.0
 DEFAULT_COMMUTE_CAP_MIN = 45.0
 
+# How close a POI node and an area have to be before they're treated as the same
+# real-world feature mapped twice. Distance is measured to the area's geometry,
+# not its centroid, so a node anywhere inside a large building already reads as 0
+# and this only has to absorb nodes placed just outside a wall (an entrance, a
+# doorway). Keep it small: the bigger it gets, the more genuinely distinct
+# neighbouring POIs it starts swallowing.
+DEFAULT_POI_DEDUPE_TOLERANCE_M = 10.0
+
 DEFAULT_WEIGHTS = {
     "supermarket": 0.30,
     "bakery": 0.10,
@@ -148,6 +156,7 @@ DEFAULT_CONFIG = {
         "noise_cap_m": 200,
         "rent_budget_eur": DEFAULT_RENT_BUDGET_EUR,
         "commute_cap_min": DEFAULT_COMMUTE_CAP_MIN,
+        "poi_dedupe_tolerance_m": DEFAULT_POI_DEDUPE_TOLERANCE_M,
         "saturation": dict(DEFAULT_SATURATION),
         "projected_crs": "auto",
         "show_walk_routes": True
@@ -307,6 +316,15 @@ def validate_config(config: Any) -> list[str]:
             elif number <= 0:
                 problems.append(f"parameters['{key}']: must be greater than 0, got {number:g}")
 
+        # Unlike the anchors above, 0 is meaningful here - it means "only merge a
+        # node that falls exactly on the area" - so this one is >= 0, not > 0.
+        if "poi_dedupe_tolerance_m" in params:
+            tolerance = _as_number(params["poi_dedupe_tolerance_m"])
+            if tolerance is None:
+                problems.append(f"parameters['poi_dedupe_tolerance_m']: must be a number, got {params['poi_dedupe_tolerance_m']!r}")
+            elif tolerance < 0:
+                problems.append(f"parameters['poi_dedupe_tolerance_m']: cannot be negative, got {tolerance:g}")
+
         saturation = params.get("saturation", {})
         if not isinstance(saturation, dict):
             problems.append(f"parameters['saturation']: expected an object keyed by metric name, got {type(saturation).__name__}")
@@ -451,6 +469,82 @@ def safe_filter(gdf: gpd.GeoDataFrame, col: str, val: Any) -> gpd.GeoDataFrame:
     return gdf[gdf[col] == val]
 
 
+def _feature_name(row: Any) -> str:
+    """A feature's `name` tag, normalized for comparison, or "" when untagged."""
+    if "name" not in row:
+        return ""
+    value = row["name"]
+    if value is None or (isinstance(value, float) and math.isnan(value)):
+        return ""
+    return str(value).strip().casefold()
+
+
+def dedupe_features(gdf_proj: gpd.GeoDataFrame, tolerance_m: float = DEFAULT_POI_DEDUPE_TOLERANCE_M,
+                    keep: str = "points") -> gpd.GeoDataFrame:
+    """Collapse features that OSM maps twice - once as a node, once as an area.
+
+    `features_from_bbox()` returns nodes, ways and relations alike, and mapping a
+    supermarket on *both* a POI node and its building outline is extremely common
+    in well-mapped cities. Counting both inflates amenity counts, and it inflates
+    them hardest exactly where mapping is densest - the opposite of what a
+    livability score wants.
+
+    Two features are treated as the same thing when the area's geometry comes
+    within `tolerance_m` of the node (distance to a polygon is 0 when the node is
+    inside it, so this catches a node anywhere in a large building) *and* their
+    `name` tags don't actively disagree. An unnamed building next to a named node
+    still merges, which is the common shape of the duplicate; two differently
+    named shops never do.
+
+    `keep` decides which copy survives:
+      - `"points"` - drop the redundant area. Right for amenity *counts*, where
+        one supermarket should contribute 1 whichever way it's drawn.
+      - `"areas"`  - drop the redundant node. Right for green space, where the
+        polygon carries the m² that `green_area_and_points` needs.
+
+    Node-vs-node duplicates are deliberately left alone: bus stops legitimately
+    come in pairs a few meters apart on opposite sides of a road, and collapsing
+    those would be the same bug in the other direction.
+    """
+    if gdf_proj is None or len(gdf_proj) < 2 or tolerance_m < 0:
+        return gdf_proj
+
+    # Everything below works on positions, never index labels: concatenated
+    # layers (bus + tram) can repeat labels, and dropping by label would take
+    # unrelated rows with them.
+    is_point = list(gdf_proj.geometry.geom_type == "Point")
+    point_positions = [i for i, point in enumerate(is_point) if point]
+    area_positions = [i for i, point in enumerate(is_point) if not point]
+    if not point_positions or not area_positions:
+        return gdf_proj
+
+    # Whichever copy we keep, the test is the same: does this feature sit on top
+    # of one from the other set? Only which set gets discarded changes.
+    discard_positions, retain_positions = (
+        (area_positions, point_positions) if keep == "points" else (point_positions, area_positions)
+    )
+    retained = gdf_proj.iloc[retain_positions]
+
+    redundant = set()
+    for position in discard_positions:
+        geometry = gdf_proj.geometry.iloc[position]
+        if geometry is None or geometry.is_empty:
+            continue
+        candidates = retained.sindex.query(geometry.buffer(tolerance_m), predicate="intersects")
+        if len(candidates) == 0:
+            continue
+        discard_name = _feature_name(gdf_proj.iloc[position])
+        for candidate in candidates:
+            retain_name = _feature_name(retained.iloc[candidate])
+            if not discard_name or not retain_name or discard_name == retain_name:
+                redundant.add(position)
+                break
+
+    if not redundant:
+        return gdf_proj
+    return gdf_proj.iloc[[i for i in range(len(gdf_proj)) if i not in redundant]]
+
+
 def to_point(lat: float, lon: float, crs: str) -> Point:
     """Convert (lat, lon) in WGS84 to a projected Point geometry."""
     return gpd.GeoSeries([Point(lon, lat)], crs="EPSG:4326").to_crs(crs).iloc[0]
@@ -528,6 +622,7 @@ class FlatScorer:
         self.noise_cap_m = self.params.get("noise_cap_m", 200)
         self.rent_budget_eur = self.params.get("rent_budget_eur", DEFAULT_RENT_BUDGET_EUR)
         self.commute_cap_min = self.params.get("commute_cap_min", DEFAULT_COMMUTE_CAP_MIN)
+        self.poi_dedupe_tolerance_m = self.params.get("poi_dedupe_tolerance_m", DEFAULT_POI_DEDUPE_TOLERANCE_M)
         # Per-metric half-credit points; a config may override any subset.
         self.saturation = dict(DEFAULT_SATURATION, **self.params.get("saturation", {}))
         self.configured_crs = self.params.get("projected_crs", "auto")
@@ -800,6 +895,27 @@ class FlatScorer:
         supermarkets_p, bakeries_p, pharmacies_p, gyms_p, transit_p, green_p, roads_p = map(
             proj, [supermarkets, bakeries, pharmacies, gyms, transit, green_all, busy_roads]
         )
+
+        def dedupe(gdf, label, keep="points"):
+            """Collapse node+area duplicates, reporting what it removed."""
+            before = len(gdf) if gdf is not None else 0
+            result = dedupe_features(gdf, self.poi_dedupe_tolerance_m, keep=keep)
+            removed = before - (len(result) if result is not None else 0)
+            if removed:
+                self._log(f"    {label}: merged {removed} of {before} feature(s) mapped as both a node and an area")
+            return result
+
+        # Roads are excluded on purpose: they only feed nearest_distance_m, which
+        # takes a minimum, so a duplicated road can't inflate anything.
+        self._log("\nDeduplicating POIs mapped as both a node and an area...")
+        supermarkets_p = dedupe(supermarkets_p, "supermarkets")
+        bakeries_p     = dedupe(bakeries_p, "bakeries")
+        pharmacies_p   = dedupe(pharmacies_p, "pharmacies")
+        gyms_p         = dedupe(gyms_p, "gyms")
+        transit_p      = dedupe(transit_p, "transit stops")
+        # Green keeps the polygon instead: it carries the m² that the green score
+        # is mostly made of, while the node would only add a 0.5 bonus.
+        green_p        = dedupe(green_p, "green spaces", keep="areas")
 
         self._log("\nScoring candidates...")
         metrics_by_name = {}
