@@ -2,14 +2,16 @@
 #
 # CI installs whatever is newest inside the ranges in requirements.txt, so the
 # declared lower bounds are never actually exercised — a wrong floor passes CI
-# and breaks for anyone who happens to resolve to it. (That is exactly how the
-# osmnx>=1.9.0 floor survived: the code needs the 2.x bbox API.) This file is
-# installed by the `min-versions` CI job on the oldest supported Python.
+# and breaks for anyone who happens to resolve to it. Two floors have already
+# been wrong this way: osmnx>=1.9.0 (the code needs the 2.x bbox API) and
+# geopandas>=0.14.0 (osmnx 2.x requires >=1.0, so the pinned set would not even
+# resolve). This file is installed by the `min-versions` CI job on the oldest
+# supported Python, which is what caught the second one.
 #
 # Keep in lockstep with requirements.txt: when a floor moves there, move it here.
 osmnx==2.0.0
 networkx==3.0
-geopandas==0.14.0
+geopandas==1.0.0
 pandas==2.0.0
 folium==0.15.0
 shapely==2.0.0

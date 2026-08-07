@@ -1,6 +1,7 @@
 osmnx>=2.0.0,<3.0.0
 networkx>=3.0,<4.0
-geopandas>=0.14.0,<2.0
+# Floor set by osmnx 2.x, which requires geopandas>=1.0 - not by our own code.
+geopandas>=1.0.0,<2.0
 pandas>=2.0.0,<3.0
 folium>=0.15.0,<1.0
 shapely>=2.0.0,<3.0
