@@ -36,6 +36,26 @@ jobs:
       - name: Validate generated config is well-formed JSON
         run: python -c "import json; json.load(open('/tmp/config.json'))"
 
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-dev.txt
+
+      # The suite is offline by design - no Overpass, no Nominatim.
+      - name: Run tests
+        run: pytest -q
+
   lint:
     runs-on: ubuntu-latest
     steps:
@@ -51,5 +71,4 @@ jobs:
         run: pip install ruff
 
       - name: Lint
-        run: ruff check FlatScorer.py --output-format=github
-        continue-on-error: true
+        run: ruff check . --output-format=github

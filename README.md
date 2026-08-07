@@ -97,6 +97,31 @@ For each candidate apartment, FlatScorer:
    against commute minutes on the same scale.
 8. **Computes a weighted score** from all of the above.
 
+### Reading the score
+
+The score is a plain weighted sum — amenity, transit, green and noise terms are
+added, rent and commute terms are subtracted:
+
+```
+score =   w_supermarket * supermarkets + w_bakery * bakeries
+        + w_pharmacy * pharmacies      + w_gym * gyms
+        + w_transit * transit_stops    + w_green * green_score
+        + w_noise * noise_benefit
+        - w_rent * (rent / euros_per_extra_minute)
+        - Σ (destination weight × walking minutes to that destination)
+```
+
+**It is not on a 0–10 scale.** Nothing bounds it: an expensive flat with a long
+commute can score negative, and a well-served one can land well above 10. Scores
+are only meaningful *relative to the other candidates in the same run* — compare
+the gaps, not the absolute numbers. The sensitivity report prints the gap between
+the top two, and if that gap is under 0.5 points the map drops its red-to-green
+pin colouring, since the ranking isn't distinguishing them at that resolution.
+
+Because the terms are raw counts and euros rather than normalized values, the
+weights are not directly comparable to each other either — a 12-supermarket
+district contributes more raw score than the whole rent term.
+
 ### Output
 
 | Artifact | Description |
@@ -216,6 +241,25 @@ retries failed requests and rotates through three public mirrors:
 
 If all mirrors fail, check your internet connection or try again later — the
 OSM infrastructure occasionally has outages.
+
+Geocoding goes through Nominatim, which allows **one request per second** and has
+no mirrors. FlatScorer paces its geocoding calls to stay inside that limit and
+retries transient failures up to three times; an address Nominatim simply cannot
+match is reported immediately rather than retried, and the affected candidate is
+listed explicitly as missing from the ranking.
+
+## Development
+
+```bash
+pip install -r requirements-dev.txt
+pytest          # offline test suite — no Overpass, no Nominatim
+ruff check .
+```
+
+The tests cover the scoring maths (`compute_score`, the sensitivity check, the
+rent→time conversion), the spatial helpers, geocode throttling/retry, map pin
+colouring, and the Streamlit `data_editor` state handling via
+`streamlit.testing`. Both `pytest` and `ruff check` gate CI.
 
 ## Data & Attribution
 

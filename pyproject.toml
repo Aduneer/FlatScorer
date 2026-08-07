@@ -1,0 +1,21 @@
+# Tooling config only — FlatScorer is a plain script, not an installable package.
+
+[tool.ruff]
+# The scoring dict literals and long f-strings read better unwrapped.
+line-length = 160
+extend-exclude = ["venv", "cache"]
+
+[tool.ruff.lint]
+extend-select = [
+    "E402",  # module-level import not at top of file
+    "I",     # import sorting
+    "B",     # likely bugs (mutable defaults, unused loop vars, ...)
+    "UP",    # outdated syntax
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+filterwarnings = [
+    # streamlit.testing runs outside a ScriptRunContext by design.
+    "ignore::DeprecationWarning:streamlit.*",
+]

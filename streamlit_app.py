@@ -26,7 +26,7 @@ from typing import Any
 import pandas as pd
 import streamlit as st
 
-from FlatScorer import DEFAULT_CONFIG, FlatScorer
+from FlatScorer import DEFAULT_CONFIG, NARROW_MARGIN_THRESHOLD, FlatScorer
 
 st.set_page_config(
     page_title="FlatScorer — Apartment Scoring Tool",
@@ -830,6 +830,17 @@ elif selected_nav.startswith("🚀"):
                 top_score = top_row["score"]
                 top_name = top_row.get("name", "Top Option")
 
+                # The score is an unbounded weighted sum with rent and commute
+                # subtracted - it has no ceiling and can go negative, so state the
+                # margin over the runner-up instead of implying a 0-10 scale.
+                margin = float(top_score - df.iloc[1]["score"]) if len(df) > 1 else None
+                if margin is None:
+                    sub_text = "Only candidate scored — nothing to compare against"
+                elif margin < NARROW_MARGIN_THRESHOLD:
+                    sub_text = f"Just {margin:.2f} pts ahead of #2 — effectively a tie"
+                else:
+                    sub_text = f"{margin:.2f} pts ahead of #2"
+
                 st.markdown(
                     f"""
                     <div class="fs-winner-panel">
@@ -840,7 +851,7 @@ elif selected_nav.startswith("🚀"):
                         <div>
                             <div class="fs-winner-eyebrow">🏆 Recommended Match</div>
                             <div class="fs-winner-name">{top_name}</div>
-                            <div class="fs-winner-sub">Score {top_score:.2f} / 10</div>
+                            <div class="fs-winner-sub">Score {top_score:.2f} — {sub_text}</div>
                         </div>
                     </div>
                     """,

@@ -29,6 +29,7 @@ import networkx as nx
 import osmnx as ox
 import pandas as pd
 import requests
+from osmnx._errors import InsufficientResponseError
 from shapely.geometry import Point
 
 # Configure default OSMnx settings
@@ -48,6 +49,20 @@ DEFAULT_OVERPASS_MIRRORS = [
 
 # Winner/runner-up score gap below which the top two are reported as effectively tied
 NARROW_MARGIN_THRESHOLD = 0.5
+
+# Nominatim's usage policy caps clients at 1 request/second, and osmnx does not
+# throttle for us: https://operations.osmfoundation.org/policies/nominatim/
+NOMINATIM_MIN_INTERVAL_S = 1.0
+
+# Geocoding, like Overpass, fails transiently. Retry a couple of times before
+# dropping a candidate from the ranking entirely.
+GEOCODE_ATTEMPTS = 3
+GEOCODE_BACKOFF_S = 2.0
+
+# Monotonic timestamp of the last Nominatim request, shared process-wide so the
+# rate limit holds across the candidate and destination loops (and across runs
+# in the long-lived Streamlit process).
+_last_geocode_at = 0.0
 
 # Default configuration template (Generic demo using Washington, DC landmarks)
 DEFAULT_CONFIG = {
@@ -107,36 +122,79 @@ DEFAULT_CONFIG = {
 
 
 def query_with_retry(fn, mirrors=DEFAULT_OVERPASS_MIRRORS, retries_per_mirror=2, backoff_s=3):
-    """Run an Overpass-backed OSMnx call with automatic fallback across mirrors."""
+    """Run an Overpass-backed OSMnx call with automatic fallback across mirrors.
+
+    Mirror selection is scoped to this call: `ox.settings.overpass_url` is a
+    process-wide global, so leaving it pointed at whichever mirror happened to
+    answer last would silently carry over into later runs - which matters in the
+    long-lived Streamlit process, not just across CLI invocations.
+    """
+    original_url = ox.settings.overpass_url
     last_err = None
-    for mirror in mirrors:
-        ox.settings.overpass_url = mirror
-        for attempt in range(1, retries_per_mirror + 1):
-            try:
-                return fn()
-            except (requests.exceptions.ConnectionError,
-                    requests.exceptions.Timeout,
-                    requests.exceptions.HTTPError,
-                    ConnectionError,
-                    TimeoutError) as e:
-                last_err = e
-                print(f"[!] {mirror} attempt {attempt}/{retries_per_mirror} failed: {e}")
-                time.sleep(backoff_s)
-        print(f"[!] Giving up on {mirror}, trying next mirror...")
+    try:
+        for mirror in mirrors:
+            ox.settings.overpass_url = mirror
+            for attempt in range(1, retries_per_mirror + 1):
+                try:
+                    return fn()
+                except (requests.exceptions.ConnectionError,
+                        requests.exceptions.Timeout,
+                        requests.exceptions.HTTPError,
+                        ConnectionError,
+                        TimeoutError) as e:
+                    last_err = e
+                    print(f"[!] {mirror} attempt {attempt}/{retries_per_mirror} failed: {e}")
+                    time.sleep(backoff_s)
+            print(f"[!] Giving up on {mirror}, trying next mirror...")
+    finally:
+        ox.settings.overpass_url = original_url
+
     raise RuntimeError(
         "All Overpass mirrors failed. Check your network connection or OSM status."
     ) from last_err
 
 
-def geocode_safe(address: str, label: str) -> tuple[float, float] | None:
-    """Safely geocode an address into (latitude, longitude) tuple."""
-    try:
-        coords = ox.geocode(address)
-        return coords
-    except Exception as e:  # noqa: BLE001 - geocoding can fail from network errors or osmnx's own exceptions; drop this candidate instead of crashing the run
-        print(f"[!] Couldn't geocode '{label}': {address} ({e})")
-        print("    Ensure the address includes street, house number, postal code, and city.")
-        return None
+def _throttle_geocode():
+    """Block until at least NOMINATIM_MIN_INTERVAL_S has passed since the last geocode."""
+    global _last_geocode_at
+    wait = NOMINATIM_MIN_INTERVAL_S - (time.monotonic() - _last_geocode_at)
+    if wait > 0:
+        time.sleep(wait)
+    _last_geocode_at = time.monotonic()
+
+
+def geocode_safe(address: str, label: str, attempts: int = GEOCODE_ATTEMPTS) -> tuple[float, float] | None:
+    """Safely geocode an address into (latitude, longitude) tuple, with rate limiting and retries."""
+    last_err: Exception | None = None
+    for attempt in range(1, attempts + 1):
+        _throttle_geocode()
+        try:
+            return ox.geocode(address)
+        except InsufficientResponseError as e:
+            # Nominatim answered, it just has no match - retrying cannot help.
+            last_err = e
+            break
+        except Exception as e:  # noqa: BLE001 - geocoding can fail from network errors or osmnx's own exceptions; drop this candidate instead of crashing the run
+            last_err = e
+            if attempt < attempts:
+                print(f"[!] Geocoding '{label}' failed (attempt {attempt}/{attempts}): {e} - retrying...")
+                time.sleep(GEOCODE_BACKOFF_S * attempt)
+
+    print(f"[!] Couldn't geocode '{label}': {address} ({last_err})")
+    print("    Ensure the address includes street, house number, postal code, and city.")
+    return None
+
+
+def rent_time_equivalent(rent: float, euros_per_minute: float) -> float:
+    """Convert rent into the commute minutes a tenant would trade for it.
+
+    Puts rent on the same scale as walking time so both can be weighted together.
+    A non-positive euros-per-minute means "rent is not being traded against time",
+    so the penalty collapses to zero rather than dividing by zero.
+    """
+    if euros_per_minute <= 0:
+        return 0.0
+    return rent / euros_per_minute
 
 
 def _winner_margin(scores: dict[str, float]) -> float | None:
@@ -189,7 +247,19 @@ def green_area_and_points(lat: float, lon: float, gdf_proj: gpd.GeoDataFrame, cr
     return float(area_m2), point_count
 
 
-def walk_route(G: nx.MultiDiGraph, orig: tuple[float, float], dest: tuple[float, float], walking_speed_m_per_min: float = 83.33) -> tuple[float, list[tuple[float, float]]]:
+def straight_line_distance_m(orig: tuple[float, float], dest: tuple[float, float], crs: str | None = None) -> float:
+    """Straight-line distance in meters between two (lat, lon) pairs.
+
+    With a projected `crs` this is a true metric distance. Without one it falls
+    back to scaling degrees by 111 km, which overstates east-west distance away
+    from the equator (~60% too long at 52 deg N) - so callers should pass the CRS.
+    """
+    if crs:
+        return float(to_point(*orig, crs).distance(to_point(*dest, crs)))
+    return float(Point(orig[1], orig[0]).distance(Point(dest[1], dest[0])) * 111000)
+
+
+def walk_route(G: nx.MultiDiGraph, orig: tuple[float, float], dest: tuple[float, float], walking_speed_m_per_min: float = 83.33, projected_crs: str | None = None) -> tuple[float, list[tuple[float, float]]]:
     """Calculate walking time in minutes and the shortest-path route (list of lat/lon points) between two coordinates over OSM graph G (~5 km/h = 83.33 m/min)."""
     orig_node = ox.distance.nearest_nodes(G, orig[1], orig[0])
     dest_node = ox.distance.nearest_nodes(G, dest[1], dest[0])
@@ -200,8 +270,7 @@ def walk_route(G: nx.MultiDiGraph, orig: tuple[float, float], dest: tuple[float,
         return length_m / walking_speed_m_per_min, route
     except nx.NetworkXNoPath:
         print(f"[!] Warning: No walking path found between {orig} and {dest}. Defaulting to straight-line distance.")
-        # Fallback to straight-line estimate
-        dist_m = Point(orig[1], orig[0]).distance(Point(dest[1], dest[0])) * 111000
+        dist_m = straight_line_distance_m(orig, dest, projected_crs)
         return dist_m / walking_speed_m_per_min, [orig, dest]
 
 
@@ -425,7 +494,9 @@ class FlatScorer:
             dest_routes = {}
             for dest_name, dest_data in resolved_destinations.items():
                 dest_coords = dest_data["coords"]
-                dest_times[dest_name], dest_routes[dest_name] = walk_route(G, (lat, lon), dest_coords)
+                dest_times[dest_name], dest_routes[dest_name] = walk_route(
+                    G, (lat, lon), dest_coords, projected_crs=projected_crs
+                )
             routes_by_candidate[name] = dest_routes
 
             m = {
@@ -437,7 +508,7 @@ class FlatScorer:
                 "green_score":       green_area_m2 / 1000.0 + green_points * 0.5,
                 "noise_benefit":     noise_benefit,
                 "destinations_min":  dest_times,
-                "rent_time_equiv":   rent / self.euros_per_min if self.euros_per_min > 0 else 0,
+                "rent_time_equiv":   rent_time_equivalent(rent, self.euros_per_min),
             }
             metrics_by_name[name] = m
             score = self.compute_score(m, self.weights)
@@ -500,11 +571,25 @@ class FlatScorer:
             ).add_to(m_map)
 
         max_score, min_score = df["score"].max(), df["score"].min()
-        score_range = (max_score - min_score) if (max_score != min_score) else 1.0
+        score_spread = float(max_score - min_score)
+        score_range = score_spread if (max_score != min_score) else 1.0
+
+        # Min-max colouring always paints the worst candidate red and the best
+        # green, even when the whole set is a photo finish. Below the same
+        # threshold the sensitivity check calls a tie, drop the colour scale
+        # entirely rather than inventing a contrast the scores don't support.
+        scores_are_tied = len(df) > 1 and score_spread < NARROW_MARGIN_THRESHOLD
+        if scores_are_tied:
+            self._log(f"[i] Candidate scores span only {score_spread:.2f} points "
+                      f"(under {NARROW_MARGIN_THRESHOLD:.1f}) - map pins are shown in one neutral colour "
+                      "instead of a red-to-green scale.")
 
         for _, row in df.iterrows():
-            frac = (row["score"] - min_score) / (score_range + 1e-9)
-            color = "green" if frac > 0.66 else "orange" if frac > 0.33 else "red"
+            if scores_are_tied:
+                color = "cadetblue"
+            else:
+                frac = (row["score"] - min_score) / (score_range + 1e-9)
+                color = "green" if frac > 0.66 else "orange" if frac > 0.33 else "red"
 
             dest_lines = []
             for col in df.columns:
@@ -524,6 +609,9 @@ class FlatScorer:
                 f"Green area nearby: {row['green_area_m2']} m²<br>"
                 f"Distance to busy road: {row['dist_busy_road_m']} m"
             )
+            if scores_are_tied:
+                popup += (f"<br><i>All candidates score within {score_spread:.2f} points - "
+                          "pin colour carries no ranking information here.</i>")
             folium.Marker(
                 [row["lat"], row["lon"]],
                 tooltip=f"{row['name']} — Score: {row['score']}",
@@ -590,7 +678,7 @@ def main():
     if args.config:
         if not os.path.exists(args.config):
             sys.exit(f"Error: Config file '{args.config}' not found.")
-        with open(args.config, "r", encoding="utf-8") as f:
+        with open(args.config, encoding="utf-8") as f:
             config = json.load(f)
 
     if args.csv:
