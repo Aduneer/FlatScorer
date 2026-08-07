@@ -182,3 +182,16 @@ def test_the_demo_config_leaves_the_run_button_enabled():
     assert not app.exception, app.exception
     assert not app.button[0].disabled
     assert not app.error
+
+
+def test_the_gui_launcher_resolves_the_app_it_ships_with():
+    """The `flatscorer-gui` entry point locates streamlit_app.py by path.
+
+    `streamlit run` needs a file, and after `pip install` that file lives in
+    site-packages rather than the cwd — so a launcher that guessed a relative
+    path would work from a checkout and fail everywhere else.
+    """
+    import flatscorer_gui
+
+    assert os.path.isfile(flatscorer_gui.app_path())
+    assert os.path.samefile(flatscorer_gui.app_path(), APP)

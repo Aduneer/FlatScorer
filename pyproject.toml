@@ -1,4 +1,58 @@
-# Tooling config only — FlatScorer is a plain script, not an installable package.
+[build-system]
+requires = ["setuptools>=77.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "flatscorer"
+version = "0.1.0"
+description = "Score and compare candidate apartments using OpenStreetMap data — amenities, transit, green space, road noise, walking commutes, and rent."
+readme = "README.md"
+requires-python = ">=3.9"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "Aduneer" }]
+keywords = ["openstreetmap", "osm", "geospatial", "apartment", "housing", "scoring", "osmnx"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Intended Audience :: End Users/Desktop",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Scientific/Engineering :: GIS",
+]
+# Read from requirements.txt so the runtime dependency list has exactly one
+# source of truth - see [tool.setuptools.dynamic] below.
+dynamic = ["dependencies"]
+
+[project.optional-dependencies]
+# Kept in lockstep with requirements-gui.txt / requirements-dev.txt by hand.
+# Those files stay because CI installs from them; these exist so `pip install
+# flatscorer[gui]` works without a checkout. Both lists are short - if either
+# grows, make the requirements files dynamic too rather than letting them drift.
+gui = ["streamlit>=1.56.0,<2.0"]
+dev = ["flatscorer[gui]", "pytest>=8.0.0,<10.0", "ruff>=0.6.0,<1.0"]
+
+[project.urls]
+Homepage = "https://github.com/Aduneer/FlatScorer"
+Issues = "https://github.com/Aduneer/FlatScorer/issues"
+
+[project.scripts]
+flatscorer = "FlatScorer:main"
+flatscorer-gui = "flatscorer_gui:main"
+
+[tool.setuptools]
+# FlatScorer is a flat set of top-level modules, not a package directory, so
+# list them explicitly - auto-discovery would otherwise refuse a root layout
+# that also holds tests/, docs/ and assets/.
+py-modules = ["FlatScorer", "streamlit_app", "flatscorer_gui"]
+
+[tool.setuptools.dynamic]
+dependencies = { file = ["requirements.txt"] }
 
 [tool.ruff]
 # The scoring dict literals and long f-strings read better unwrapped.

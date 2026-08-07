@@ -120,6 +120,45 @@ jobs:
       - name: Run tests
         run: pytest -q
 
+  # Builds the wheel and installs it somewhere with no checkout on sys.path, so a
+  # module missing from py-modules or a broken entry point fails here rather than
+  # for whoever runs `pip install` first.
+  package:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Build the wheel
+        run: |
+          python -m pip install --upgrade pip build
+          python -m build --wheel
+
+      - name: Install the built wheel into a clean venv
+        run: |
+          python -m venv /tmp/pkgtest
+          /tmp/pkgtest/bin/pip install dist/*.whl
+
+      # Run from / so nothing resolves via the checkout by accident.
+      - name: The console script works away from the source tree
+        run: cd / && /tmp/pkgtest/bin/flatscorer --generate-config /tmp/packaged.json
+
+      - name: The installed package carries every module it needs
+        run: cd / && /tmp/pkgtest/bin/python -c "import FlatScorer, flatscorer_gui; print(flatscorer_gui.app_path())"
+
+      - name: The GUI launcher finds the app it ships with
+        run: |
+          cd / && /tmp/pkgtest/bin/python -c "
+          import os, flatscorer_gui
+          assert os.path.isfile(flatscorer_gui.app_path()), flatscorer_gui.app_path()
+          print('streamlit_app.py shipped OK')
+          "
+
   lint:
     runs-on: ubuntu-latest
     steps:

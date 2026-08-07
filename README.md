@@ -45,16 +45,28 @@ tells you whether your ranking is robust or hinges on a single weight choice.
 
 ## Quick Start
 
+Install it as a command-line tool:
+
 ```bash
-# Clone and install dependencies
+pip install git+https://github.com/Aduneer/FlatScorer.git
+
+# Generate a starter config with demo data
+flatscorer --generate-config config.json
+
+# Edit config.json with your own addresses, then run
+flatscorer --config config.json
+```
+
+[`pipx`](https://pipx.pypa.io/) works too and keeps the fairly heavy geospatial
+stack out of your global site-packages: `pipx install "flatscorer[gui] @ git+https://github.com/Aduneer/FlatScorer.git"`.
+
+Or run it straight from a checkout, without installing:
+
+```bash
 git clone https://github.com/Aduneer/FlatScorer.git
 cd FlatScorer
 pip install -r requirements.txt
-
-# Generate a starter config with demo data
 python FlatScorer.py --generate-config config.json
-
-# Edit config.json with your own addresses, then run
 python FlatScorer.py --config config.json
 ```
 
@@ -69,9 +81,17 @@ tune weights with sliders, and get the ranked table and interactive map
 right in your browser.
 
 ```bash
+# Installed as a package — the GUI is an optional extra
+pip install "flatscorer[gui] @ git+https://github.com/Aduneer/FlatScorer.git"
+flatscorer-gui
+
+# Or from a checkout
 pip install -r requirements-gui.txt
 streamlit run streamlit_app.py
 ```
+
+`flatscorer-gui` forwards any extra arguments to `streamlit run`, so
+`flatscorer-gui --server.port 8600` does what you'd expect.
 
 It reuses `FlatScorer.py` directly, so results are identical to the CLI —
 this is just a friendlier way to build the config and view the output.
@@ -319,16 +339,28 @@ listed explicitly as missing from the ranking.
 ## Development
 
 ```bash
-pip install -r requirements-dev.txt
+pip install -e ".[dev]"     # or: pip install -r requirements-dev.txt
 pytest          # offline test suite — no Overpass, no Nominatim
 ruff check .
 ```
+
+Packaging metadata lives in `pyproject.toml`, which also holds the ruff and
+pytest config. The runtime dependency list is read from `requirements.txt` so
+there's exactly one source of truth; the `gui` and `dev` extras are declared
+inline and mirror `requirements-gui.txt` / `requirements-dev.txt`, which stay
+because CI installs from them. FlatScorer ships as three top-level modules
+(`FlatScorer`, `streamlit_app`, `flatscorer_gui`) rather than a package
+directory, so `[tool.setuptools] py-modules` lists them explicitly.
 
 The tests cover the scoring maths (metric normalization, `compute_score`'s 0–10
 bounds under extreme inputs, the score breakdown, the sensitivity check), config
 validation, the spatial helpers, geocode throttling/retry, map pin colouring, and
 the Streamlit `data_editor` state handling via `streamlit.testing`. Both `pytest`
 and `ruff check` gate CI.
+
+A `package` CI job builds the wheel and installs it into a clean venv with no
+checkout on `sys.path`, so a module missing from `py-modules` or a broken console
+script fails in CI rather than for whoever runs `pip install` first.
 
 `requirements.txt` declares version *ranges*, so CI installing the newest of each
 would never exercise the declared floors — and a wrong floor then only breaks for

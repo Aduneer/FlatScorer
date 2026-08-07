@@ -960,6 +960,19 @@ class FlatScorer:
         self._log(f"[+] Saved interactive map to {html_file}")
 
 
+def _invocation() -> str:
+    """How the user actually started this run, for accurate hint text.
+
+    Installed via pip the entry point is `flatscorer`; from a checkout it's
+    `python FlatScorer.py`. Telling someone to run the file they don't have is
+    worse than no hint at all.
+    """
+    invoked_as = os.path.basename(sys.argv[0] or "")
+    if invoked_as.endswith(".py"):
+        return f"python {invoked_as}"
+    return invoked_as or "flatscorer"
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="FlatScorer - Multi-Criteria Apartment Scoring Engine"
@@ -987,12 +1000,12 @@ def main():
             json.dump(DEFAULT_CONFIG, f, indent=2, ensure_ascii=False)
         print(f"[+] Generated sample configuration file at '{args.generate_config}'")
         print("    Edit it with your own addresses, then run:")
-        print(f"    python {os.path.basename(__file__)} --config {args.generate_config}")
+        print(f"    {_invocation()} --config {args.generate_config}")
         sys.exit(0)
 
     if not args.config:
         print("No config file specified. Running with built-in demo data.")
-        print(f"To create your own config: python {os.path.basename(__file__)} --generate-config config.json")
+        print(f"To create your own config: {_invocation()} --generate-config config.json")
         print()
 
     config = DEFAULT_CONFIG
