@@ -5,3 +5,10 @@ pandas>=2.0.0,<3.0
 folium>=0.15.0,<1.0
 shapely>=2.0.0,<3.0
 requests>=2.31.0,<3.0
+
+# osmnx treats these as optional, but walk_route() needs both on every run:
+# ox.distance.nearest_nodes() uses a scikit-learn BallTree for unprojected
+# graphs (which is what graph_from_bbox returns) and a scipy k-d tree for
+# projected ones. Without them the tool imports fine and dies mid-run.
+scikit-learn>=1.3.0,<2.0
+scipy>=1.10.0,<2.0

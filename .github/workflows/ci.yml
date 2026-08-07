@@ -36,6 +36,25 @@ jobs:
       - name: Validate generated config is well-formed JSON
         run: python -c "import json; json.load(open('/tmp/config.json'))"
 
+      # Routing needs osmnx's *optional* scipy/scikit-learn deps, so an import
+      # check alone passes while a real run dies. Exercise the code path here,
+      # on every Python version, using an in-memory graph and no network.
+      - name: Route over a tiny in-memory graph
+        run: |
+          python - <<'PY'
+          import networkx as nx
+          import FlatScorer
+
+          G = nx.MultiDiGraph(crs="EPSG:4326")
+          G.add_node(1, x=13.0, y=52.0)
+          G.add_node(2, x=13.01, y=52.0)
+          G.add_edge(1, 2, length=1000.0)
+
+          minutes, route = FlatScorer.walk_route(G, (52.0, 13.0), (52.0, 13.01))
+          assert route == [(52.0, 13.0), (52.0, 13.01)], route
+          print(f"routed OK: {minutes:.2f} min")
+          PY
+
   test:
     runs-on: ubuntu-latest
     steps:

@@ -222,7 +222,9 @@ options:
 
 - Python 3.9+
 - Dependencies: `osmnx`, `networkx`, `geopandas`, `pandas`, `folium`,
-  `shapely`, `requests`
+  `shapely`, `requests`, plus `scipy` and `scikit-learn` — osmnx treats those
+  last two as optional, but nearest-node lookup needs them, so routing fails
+  mid-run without them
 
 Install everything with:
 
