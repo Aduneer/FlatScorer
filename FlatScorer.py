@@ -102,6 +102,12 @@ DEFAULT_POI_DEDUPE_TOLERANCE_M = 10.0
 # spans that raises the parameter).
 DEFAULT_MAX_BBOX_SPAN_KM = 30.0
 
+# Assumed walking pace, in metres per minute: 83.33 is 5 km/h, the usual planning
+# figure for an unhurried adult on the flat. It converts every routed distance
+# into the minutes that `commute_cap_min` is measured against, so the two anchors
+# only mean what they say together - lower this and every commute term drops.
+DEFAULT_WALKING_SPEED_M_PER_MIN = 83.33
+
 DEFAULT_WEIGHTS = {
     "supermarket": 0.30,
     "bakery": 0.10,
@@ -166,6 +172,7 @@ DEFAULT_CONFIG = {
         "noise_cap_m": 200,
         "rent_budget_eur": DEFAULT_RENT_BUDGET_EUR,
         "commute_cap_min": DEFAULT_COMMUTE_CAP_MIN,
+        "walking_speed_m_per_min": DEFAULT_WALKING_SPEED_M_PER_MIN,
         "poi_dedupe_tolerance_m": DEFAULT_POI_DEDUPE_TOLERANCE_M,
         "max_bbox_span_km": DEFAULT_MAX_BBOX_SPAN_KM,
         "saturation": dict(DEFAULT_SATURATION),
@@ -347,7 +354,8 @@ def validate_config(config: Any) -> list[str]:
         # Each of these is a normalization anchor, a search radius or a size
         # limit; a zero or negative value silently zeroes or inverts the term it
         # governs, or (for max_bbox_span_km) rejects every possible search.
-        for key in ("buffer_m", "noise_cap_m", "rent_budget_eur", "commute_cap_min", "max_bbox_span_km"):
+        for key in ("buffer_m", "noise_cap_m", "rent_budget_eur", "commute_cap_min", "max_bbox_span_km",
+                    "walking_speed_m_per_min"):
             if key not in params:
                 continue
             number = _as_number(params[key])
@@ -686,9 +694,14 @@ def nearest_node(G: nx.MultiDiGraph, point: tuple[float, float]):
     return ox.distance.nearest_nodes(G, point[1], point[0])
 
 
-def walk_route(G: nx.MultiDiGraph, orig: tuple[float, float], dest: tuple[float, float], walking_speed_m_per_min: float = 83.33, projected_crs: str | None = None,
+def walk_route(G: nx.MultiDiGraph, orig: tuple[float, float], dest: tuple[float, float], walking_speed_m_per_min: float = DEFAULT_WALKING_SPEED_M_PER_MIN, projected_crs: str | None = None,
                orig_node=None, dest_node=None) -> tuple[float, list[tuple[float, float]]]:
-    """Calculate walking time in minutes and the shortest-path route (list of lat/lon points) between two coordinates over OSM graph G (~5 km/h = 83.33 m/min).
+    """Calculate walking time in minutes and the shortest-path route (list of lat/lon points) between two coordinates over OSM graph G.
+
+    The speed defaults to `DEFAULT_WALKING_SPEED_M_PER_MIN` so the function stays
+    usable standalone, but `run()` always passes the configured
+    `parameters['walking_speed_m_per_min']` - the default is a fallback, not the
+    value the tool actually scores with.
 
     `orig_node`/`dest_node` let a caller supply an already-resolved graph node.
     `run()` does, because the endpoints repeat: without it the lookup runs
@@ -730,6 +743,7 @@ class FlatScorer:
         self.commute_cap_min = self.params.get("commute_cap_min", DEFAULT_COMMUTE_CAP_MIN)
         self.poi_dedupe_tolerance_m = self.params.get("poi_dedupe_tolerance_m", DEFAULT_POI_DEDUPE_TOLERANCE_M)
         self.max_bbox_span_km = self.params.get("max_bbox_span_km", DEFAULT_MAX_BBOX_SPAN_KM)
+        self.walking_speed_m_per_min = self.params.get("walking_speed_m_per_min", DEFAULT_WALKING_SPEED_M_PER_MIN)
         # Per-metric half-credit points; a config may override any subset.
         self.saturation = dict(DEFAULT_SATURATION, **self.params.get("saturation", {}))
         self.configured_crs = self.params.get("projected_crs", "auto")
@@ -1047,7 +1061,10 @@ class FlatScorer:
             for dest_name, data in resolved_destinations.items()
         }
 
-        self._log("\nScoring candidates...")
+        # Worth stating: it converts every routed distance into the minutes that
+        # commute_cap_min judges, so a reader comparing two runs needs to know it.
+        self._log(f"\nScoring candidates (walking at {self.walking_speed_m_per_min:g} m/min "
+                  f"= {self.walking_speed_m_per_min * 60 / 1000:.1f} km/h)...")
         metrics_by_name = {}
         routes_by_candidate = {}
         rows = []
@@ -1066,7 +1083,9 @@ class FlatScorer:
             for dest_name, dest_data in resolved_destinations.items():
                 dest_coords = dest_data["coords"]
                 dest_times[dest_name], dest_routes[dest_name] = walk_route(
-                    G, (lat, lon), dest_coords, projected_crs=projected_crs,
+                    G, (lat, lon), dest_coords,
+                    walking_speed_m_per_min=self.walking_speed_m_per_min,
+                    projected_crs=projected_crs,
                     orig_node=orig_node, dest_node=dest_nodes[dest_name],
                 )
             routes_by_candidate[name] = dest_routes

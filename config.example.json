@@ -45,6 +45,7 @@
     "noise_cap_m": 200,
     "rent_budget_eur": 2500,
     "commute_cap_min": 45,
+    "walking_speed_m_per_min": 83.33,
     "poi_dedupe_tolerance_m": 10,
     "max_bbox_span_km": 30,
     "saturation": {

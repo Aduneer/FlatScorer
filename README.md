@@ -242,6 +242,7 @@ Everything is driven by a single JSON file. Generate a template with
     "noise_cap_m": 200,            // quiet term maxes out at this distance from a busy road
     "rent_budget_eur": 2500,       // rent at/above this scores 0 on the rent term
     "commute_cap_min": 45,         // a walk this long scores 0 for that destination
+    "walking_speed_m_per_min": 83.33,  // assumed pace; 83.33 m/min = 5 km/h
     "max_bbox_span_km": 30,        // refuse to download an area wider than this
     "saturation": {                // count earning half credit (diminishing returns)
       "supermarket": 2, "bakery": 2, "pharmacy": 1,
@@ -272,6 +273,14 @@ Everything is driven by a single JSON file. Generate a template with
   0.00 for every candidate, raise the cap (or accept that nobody is walking
   there). Both anchors are deliberately absolute — that is what makes a score
   mean the same thing between runs.
+
+- **`walking_speed_m_per_min`** — The pace every routed distance is divided by to
+  get minutes. The default 83.33 m/min is 5 km/h, the usual planning figure for
+  an unhurried adult on the flat; 100 m/min (6 km/h) is a brisk walker. It only
+  means anything alongside `commute_cap_min`, because the two multiply out: a
+  slower pace makes every walk longer in minutes and so pushes more destinations
+  towards the cap. If you change one, sanity-check the other — the routed
+  distances themselves have not moved.
 
 - **`saturation`** — The count that earns half credit for each amenity, i.e. how
   quickly more of something stops helping. Lower is easier to satisfy: at

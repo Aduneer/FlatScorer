@@ -836,7 +836,7 @@ elif selected_nav.startswith("⚖️"):
             help="Distance from a busy road at which the quiet term maxes out. Raising it no longer inflates noise's influence — the term is scaled by the cap.",
         )
 
-    p5, p6 = st.columns([3, 1])
+    p5, p6, p7 = st.columns([2, 1, 1])
     with p5:
         st.session_state.params["projected_crs"] = st.text_input(
             "Projected CRS",
@@ -851,6 +851,17 @@ elif selected_nav.startswith("⚖️"):
             step=5,
             help="Refuses the OpenStreetMap download if the addresses spread further apart than this — which almost always means one of them geocoded to the wrong city. Raise it for a genuinely region-wide search.",
         )
+    with p7:
+        walking_speed = st.number_input(
+            "Walking speed (m/min)",
+            min_value=1.0,
+            value=float(st.session_state.params.get(
+                "walking_speed_m_per_min", DEFAULT_PARAMS["walking_speed_m_per_min"])),
+            step=5.0,
+            help="Turns routed distance into the minutes the commute cap is measured against. Lower it and every commute term drops, so it only means anything alongside the cap above.",
+        )
+        st.session_state.params["walking_speed_m_per_min"] = walking_speed
+        st.caption(f"≈ {walking_speed * 60 / 1000:.1f} km/h")
 
     st.session_state.params["show_walk_routes"] = st.checkbox(
         "Show predicted walking routes on map by default",

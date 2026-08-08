@@ -818,7 +818,8 @@ def test_a_destination_weight_alone_is_enough_to_carry_the_score():
     assert fs.validate_config(config) == []
 
 
-@pytest.mark.parametrize("key", ["buffer_m", "noise_cap_m", "rent_budget_eur", "commute_cap_min"])
+@pytest.mark.parametrize("key", ["buffer_m", "noise_cap_m", "rent_budget_eur", "commute_cap_min",
+                                 "walking_speed_m_per_min"])
 def test_a_non_positive_normalization_anchor_is_rejected(key):
     assert f"parameters['{key}']" in only_problem(valid_config(parameters={key: 0}))
 
@@ -1251,17 +1252,23 @@ def chain_graph() -> nx.MultiDiGraph:
 
 @pytest.fixture
 def offline_run(monkeypatch, tmp_path):
-    """Drive run() end to end with a tiny graph and no POIs, no network at all."""
+    """Drive run() end to end with a tiny graph and no POIs, no network at all.
+
+    Callable more than once per test, so two configs can be compared - hence the
+    queue being refilled per run rather than a one-shot iterator.
+    """
     monkeypatch.setattr(fs, "geocode_safe", lambda addr, label, **kw: CHAIN_COORDS[addr])
 
-    responses = iter([chain_graph(), gpd.GeoDataFrame()])
-    monkeypatch.setattr(fs, "query_with_retry", lambda fn, **kw: next(responses))
+    responses: list[Any] = []
+    monkeypatch.setattr(fs, "query_with_retry", lambda fn, **kw: responses.pop(0))
 
     def run(config: dict) -> pd.DataFrame:
         config["output"] = {
             "csv_file": str(tmp_path / "scores.csv"),
             "html_file": str(tmp_path / "map.html"),
         }
+        # run() makes exactly two Overpass-backed calls: the graph, then the POIs.
+        responses[:] = [chain_graph(), gpd.GeoDataFrame()]
         return fs.FlatScorer(config, verbose=False).run()
 
     return run
@@ -1302,3 +1309,53 @@ def test_the_node_cache_does_not_change_the_commute_times(monkeypatch, offline_r
     # 1 candidate + 2 destinations = 3 lookups, not the 2*1*2 = 4 of one per leg.
     assert len(lookups) == 3
     assert df.iloc[0]["near_office_walk_min"] == pytest.approx(1000.0 / 83.33, abs=0.05)
+
+
+# ------------------------------------------------------ configurable walk speed --
+
+def one_destination_config(**parameters) -> dict:
+    """A candidate 1000 m along the chain graph from its only destination."""
+    return valid_config(
+        destinations={"Near Office": {"address": "2 Office Rd", "weight": 0.2}},
+        parameters=parameters,
+    )
+
+
+def test_the_configured_walking_speed_reaches_the_commute_times(offline_run):
+    """The whole point: tunable from config, without editing walk_route's default."""
+    df = offline_run(one_destination_config(walking_speed_m_per_min=100.0))
+    assert df.iloc[0]["near_office_walk_min"] == pytest.approx(10.0, abs=0.05)
+
+
+def test_an_absent_walking_speed_falls_back_to_the_default(offline_run):
+    """Every config written before this parameter existed has to score identically."""
+    df = offline_run(one_destination_config())
+    assert df.iloc[0]["near_office_walk_min"] == pytest.approx(
+        1000.0 / fs.DEFAULT_WALKING_SPEED_M_PER_MIN, abs=0.05)
+
+
+def test_a_slower_pace_moves_the_score_not_just_the_reported_minutes(offline_run):
+    """A pace change has to propagate through the commute term into the score.
+
+    3 km at 83.33 m/min is 36 minutes, inside the default 45-minute cap and so
+    worth something; at 40 m/min it is 75 minutes, past the cap and worth nothing.
+    """
+    far = {"Far Office": {"address": "3 Far Office Rd", "weight": 0.2}}
+    brisk = offline_run(valid_config(destinations=far, parameters={}))
+    slow = offline_run(valid_config(destinations=far, parameters={"walking_speed_m_per_min": 40.0}))
+
+    assert brisk.iloc[0]["far_office_walk_min"] == pytest.approx(36.0, abs=0.1)
+    assert slow.iloc[0]["far_office_walk_min"] == pytest.approx(75.0, abs=0.1)
+    assert slow.iloc[0]["score"] < brisk.iloc[0]["score"]
+
+
+def test_walk_routes_default_is_the_documented_constant():
+    """The default is a standalone-use fallback; run() overrides it either way."""
+    import inspect
+    default = inspect.signature(fs.walk_route).parameters["walking_speed_m_per_min"].default
+    assert default == fs.DEFAULT_WALKING_SPEED_M_PER_MIN
+    assert fs.DEFAULT_WALKING_SPEED_M_PER_MIN * 60 / 1000 == pytest.approx(5.0, abs=0.01)
+
+
+def test_the_shipped_default_config_carries_a_walking_speed():
+    assert fs.DEFAULT_CONFIG["parameters"]["walking_speed_m_per_min"] == fs.DEFAULT_WALKING_SPEED_M_PER_MIN

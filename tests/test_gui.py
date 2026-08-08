@@ -117,7 +117,28 @@ def test_weights_page_carries_the_normalization_anchors_into_the_config():
 
     assert params["rent_budget_eur"] > 0
     assert params["commute_cap_min"] > 0
+    assert params["walking_speed_m_per_min"] > 0
     assert set(params["saturation"]) == set(streamlit_app.DEFAULT_PARAMS["saturation"])
+
+
+def test_the_walking_speed_widget_reaches_the_built_config():
+    """The parameter is only tunable if the GUI's value actually gets scored."""
+    import streamlit_app
+
+    app = fresh_app()
+    app.session_state["main_nav_radio"] = WEIGHTS
+    app.run()
+
+    speed_input = next(w for w in app.number_input if "Walking speed" in w.label)
+    speed_input.set_value(100.0).run()
+
+    assert not app.exception, app.exception
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(streamlit_app.st, "session_state", app.session_state)
+        params = streamlit_app._build_config()["parameters"]
+
+    assert params["walking_speed_m_per_min"] == 100.0
 
 
 def test_editing_a_saturation_widget_does_not_mutate_the_module_default():
