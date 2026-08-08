@@ -46,6 +46,7 @@
     "rent_budget_eur": 2500,
     "commute_cap_min": 45,
     "poi_dedupe_tolerance_m": 10,
+    "max_bbox_span_km": 30,
     "saturation": {
       "supermarket": 2,
       "bakery": 2,

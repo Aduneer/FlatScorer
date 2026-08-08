@@ -22,6 +22,7 @@ import math
 import os
 import sys
 import time
+from collections.abc import Iterable
 from typing import Any
 
 import folium
@@ -92,6 +93,15 @@ DEFAULT_COMMUTE_CAP_MIN = 45.0
 # neighbouring POIs it starts swallowing.
 DEFAULT_POI_DEDUPE_TOLERANCE_M = 10.0
 
+# Largest side of the search bounding box, in km, that will be downloaded without
+# complaint. Every resolved point has to fit inside this, so it is really a guard
+# against a mis-geocoded address: "work" landing in the wrong Berlin produces a
+# box hundreds of km across, and asking Overpass for that much pedestrian network
+# is a long hang followed by a rejection. 30 km comfortably covers any real
+# single-city search (greater London is ~45 km east-west; a config that genuinely
+# spans that raises the parameter).
+DEFAULT_MAX_BBOX_SPAN_KM = 30.0
+
 DEFAULT_WEIGHTS = {
     "supermarket": 0.30,
     "bakery": 0.10,
@@ -157,6 +167,7 @@ DEFAULT_CONFIG = {
         "rent_budget_eur": DEFAULT_RENT_BUDGET_EUR,
         "commute_cap_min": DEFAULT_COMMUTE_CAP_MIN,
         "poi_dedupe_tolerance_m": DEFAULT_POI_DEDUPE_TOLERANCE_M,
+        "max_bbox_span_km": DEFAULT_MAX_BBOX_SPAN_KM,
         "saturation": dict(DEFAULT_SATURATION),
         "projected_crs": "auto",
         "show_walk_routes": True
@@ -180,6 +191,34 @@ class ConfigError(ValueError):
         self.problems = list(problems)
         body = "\n".join(f"  - {p}" for p in self.problems)
         super().__init__(f"Configuration is not valid ({len(self.problems)} problem(s)):\n{body}")
+
+
+class SearchAreaError(ValueError):
+    """The area to download is too large to be a plausible apartment search.
+
+    Raised before the Overpass call rather than after it: the whole complaint is
+    that a mis-geocoded address makes the tool hang for minutes on a download
+    that was never going to succeed. Like `ConfigError` this is a hard error and
+    not a prompt, because `run()` is driven by the GUI as well as the CLI and
+    Streamlit has no interactive channel to answer one.
+    """
+
+    def __init__(self, span_km: float, max_span_km: float, outlier: str | None, outlier_km: float):
+        self.span_km = span_km
+        self.max_span_km = max_span_km
+        self.outlier = outlier
+        self.outlier_km = outlier_km
+
+        message = (f"The search area spans {span_km:.0f} km, over the "
+                   f"{max_span_km:g} km limit.")
+        if outlier:
+            message += (f" {outlier} sits {outlier_km:.0f} km from the middle of the "
+                        "candidate apartments, so it has most likely geocoded to the "
+                        "wrong place - check that address first.")
+        message += (" Downloading a street network this size would hang for a long time "
+                    "and then be refused by Overpass. If the search really is this large, "
+                    "raise parameters['max_bbox_span_km'].")
+        super().__init__(message)
 
 
 def _as_number(value: Any) -> float | None:
@@ -305,9 +344,10 @@ def validate_config(config: Any) -> list[str]:
     if not isinstance(params, dict):
         problems.append(f"parameters: expected an object, got {type(params).__name__}")
     else:
-        # Each of these is a normalization anchor or a search radius; a zero or
-        # negative value silently zeroes or inverts the term it governs.
-        for key in ("buffer_m", "noise_cap_m", "rent_budget_eur", "commute_cap_min"):
+        # Each of these is a normalization anchor, a search radius or a size
+        # limit; a zero or negative value silently zeroes or inverts the term it
+        # governs, or (for max_bbox_span_km) rejects every possible search.
+        for key in ("buffer_m", "noise_cap_m", "rent_budget_eur", "commute_cap_min", "max_bbox_span_km"):
             if key not in params:
                 continue
             number = _as_number(params[key])
@@ -550,6 +590,53 @@ def to_point(lat: float, lon: float, crs: str) -> Point:
     return gpd.GeoSeries([Point(lon, lat)], crs="EPSG:4326").to_crs(crs).iloc[0]
 
 
+def check_search_area(points: dict[str, tuple[float, float]], crs: str,
+                      max_span_km: float = DEFAULT_MAX_BBOX_SPAN_KM,
+                      centre_labels: Iterable[str] | None = None) -> float:
+    """Return the search area's longest side in km, raising if it exceeds the limit.
+
+    `points` maps a display label ("candidate 'Flat A' (1 Main St)") to its
+    resolved (lat, lon). The span is measured in `crs`, not in degrees: a degree
+    of longitude is ~68 km at 52 deg N and ~111 km at the equator, so a threshold
+    in degrees would mean a different thing in every city.
+
+    `centre_labels` names the points that define where the search is *supposed*
+    to be - the candidates. Measuring the outlier from their midpoint rather than
+    from the midpoint of everything is what makes the message name the one wrong
+    address instead of splitting the blame between the two ends of the box.
+
+    On a wildly wrong search the auto-detected UTM zone fits neither end and the
+    reported km overstate the true distance (a DC/Berlin mix reads ~6,900 km for
+    a real ~6,400). That only ever errs towards rejecting, and by then the number
+    is absurd either way; near the threshold, where it matters, it is accurate.
+    """
+    if not points:
+        return 0.0
+
+    labels = list(points)
+    projected = gpd.GeoSeries(
+        [Point(lon, lat) for lat, lon in (points[label] for label in labels)],
+        crs="EPSG:4326",
+    ).to_crs(crs)
+    xs = list(projected.x)
+    ys = list(projected.y)
+
+    span_km = max(max(xs) - min(xs), max(ys) - min(ys)) / 1000.0
+    if span_km <= max_span_km:
+        return span_km
+
+    # Only reached on the failure path, so the extra pass costs nothing in the
+    # normal case.
+    centre_set = set(centre_labels) if centre_labels else set()
+    centre_indices = [i for i, label in enumerate(labels) if label in centre_set] or list(range(len(labels)))
+    centre_x = sum(xs[i] for i in centre_indices) / len(centre_indices)
+    centre_y = sum(ys[i] for i in centre_indices) / len(centre_indices)
+
+    distances = [math.hypot(x - centre_x, y - centre_y) / 1000.0 for x, y in zip(xs, ys)]
+    farthest = max(range(len(labels)), key=lambda i: distances[i])
+    raise SearchAreaError(span_km, max_span_km, labels[farthest], distances[farthest])
+
+
 def count_nearby(lat: float, lon: float, gdf_proj: gpd.GeoDataFrame, crs: str, dist: float = 500) -> int:
     """Count features within `dist` meters of a given coordinate."""
     if gdf_proj is None or len(gdf_proj) == 0:
@@ -590,10 +677,29 @@ def straight_line_distance_m(orig: tuple[float, float], dest: tuple[float, float
     return float(Point(orig[1], orig[0]).distance(Point(dest[1], dest[0])) * 111000)
 
 
-def walk_route(G: nx.MultiDiGraph, orig: tuple[float, float], dest: tuple[float, float], walking_speed_m_per_min: float = 83.33, projected_crs: str | None = None) -> tuple[float, list[tuple[float, float]]]:
-    """Calculate walking time in minutes and the shortest-path route (list of lat/lon points) between two coordinates over OSM graph G (~5 km/h = 83.33 m/min)."""
-    orig_node = ox.distance.nearest_nodes(G, orig[1], orig[0])
-    dest_node = ox.distance.nearest_nodes(G, dest[1], dest[0])
+def nearest_node(G: nx.MultiDiGraph, point: tuple[float, float]):
+    """Graph node nearest to a (lat, lon) pair.
+
+    A thin wrapper so callers can hoist the lookup out of a loop without
+    repeating osmnx's (x, y) argument order, which is the reverse of ours.
+    """
+    return ox.distance.nearest_nodes(G, point[1], point[0])
+
+
+def walk_route(G: nx.MultiDiGraph, orig: tuple[float, float], dest: tuple[float, float], walking_speed_m_per_min: float = 83.33, projected_crs: str | None = None,
+               orig_node=None, dest_node=None) -> tuple[float, list[tuple[float, float]]]:
+    """Calculate walking time in minutes and the shortest-path route (list of lat/lon points) between two coordinates over OSM graph G (~5 km/h = 83.33 m/min).
+
+    `orig_node`/`dest_node` let a caller supply an already-resolved graph node.
+    `run()` does, because the endpoints repeat: without it the lookup runs
+    2*candidates*destinations times where candidates+destinations would do, and
+    on a city-sized graph that lookup is not cheap. Passing them is purely an
+    optimisation - omit them and the same nodes are resolved here.
+    """
+    if orig_node is None:
+        orig_node = nearest_node(G, orig)
+    if dest_node is None:
+        dest_node = nearest_node(G, dest)
     try:
         path = nx.shortest_path(G, orig_node, dest_node, weight="length")
         length_m = nx.path_weight(G, path, weight="length")
@@ -623,6 +729,7 @@ class FlatScorer:
         self.rent_budget_eur = self.params.get("rent_budget_eur", DEFAULT_RENT_BUDGET_EUR)
         self.commute_cap_min = self.params.get("commute_cap_min", DEFAULT_COMMUTE_CAP_MIN)
         self.poi_dedupe_tolerance_m = self.params.get("poi_dedupe_tolerance_m", DEFAULT_POI_DEDUPE_TOLERANCE_M)
+        self.max_bbox_span_km = self.params.get("max_bbox_span_km", DEFAULT_MAX_BBOX_SPAN_KM)
         # Per-metric half-credit points; a config may override any subset.
         self.saturation = dict(DEFAULT_SATURATION, **self.params.get("saturation", {}))
         self.configured_crs = self.params.get("projected_crs", "auto")
@@ -858,6 +965,22 @@ class FlatScorer:
         margin = 0.015
         bbox = (min(lons) - margin, min(lats) - margin, max(lons) + margin, max(lats) + margin)
 
+        # Refuse an implausibly large box *before* the download rather than after
+        # it: a single address geocoded to the wrong city is otherwise a multi-
+        # minute hang ending in an Overpass rejection with nothing to act on.
+        # Labels carry the address so the message points at the entry to fix.
+        candidate_points = {
+            f"candidate '{name}' ({info['address']})": info["coords"]
+            for name, info in resolved_candidates.items()
+        }
+        area_points = dict(candidate_points, **{
+            f"destination '{dest_name}' ({data['info']['address']})": data["coords"]
+            for dest_name, data in resolved_destinations.items()
+        })
+        span_km = check_search_area(area_points, projected_crs, self.max_bbox_span_km,
+                                    centre_labels=candidate_points)
+        self._log(f"[+] Search area spans {span_km:.1f} km (limit {self.max_bbox_span_km:g} km)")
+
         self._log("\nDownloading street walking network from OpenStreetMap...")
         def get_graph():
             return ox.graph_from_bbox(bbox=bbox, network_type="walk")
@@ -917,6 +1040,13 @@ class FlatScorer:
         # is mostly made of, while the node would only add a 0.5 bonus.
         green_p        = dedupe(green_p, "green spaces", keep="areas")
 
+        # Each destination's nearest graph node is the same for every candidate,
+        # so resolve it once here instead of once per (candidate, destination).
+        dest_nodes = {
+            dest_name: nearest_node(G, data["coords"])
+            for dest_name, data in resolved_destinations.items()
+        }
+
         self._log("\nScoring candidates...")
         metrics_by_name = {}
         routes_by_candidate = {}
@@ -925,6 +1055,7 @@ class FlatScorer:
         for name, info in resolved_candidates.items():
             lat, lon = info["coords"]
             rent = info["rent"]
+            orig_node = nearest_node(G, (lat, lon))
 
             green_area_m2, green_points = green_area_and_points(lat, lon, green_p, projected_crs, dist=self.buffer_m)
             dist_to_busy_road = nearest_distance_m(lat, lon, roads_p, projected_crs)
@@ -935,7 +1066,8 @@ class FlatScorer:
             for dest_name, dest_data in resolved_destinations.items():
                 dest_coords = dest_data["coords"]
                 dest_times[dest_name], dest_routes[dest_name] = walk_route(
-                    G, (lat, lon), dest_coords, projected_crs=projected_crs
+                    G, (lat, lon), dest_coords, projected_crs=projected_crs,
+                    orig_node=orig_node, dest_node=dest_nodes[dest_name],
                 )
             routes_by_candidate[name] = dest_routes
 

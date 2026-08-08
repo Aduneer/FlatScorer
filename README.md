@@ -242,6 +242,7 @@ Everything is driven by a single JSON file. Generate a template with
     "noise_cap_m": 200,            // quiet term maxes out at this distance from a busy road
     "rent_budget_eur": 2500,       // rent at/above this scores 0 on the rent term
     "commute_cap_min": 45,         // a walk this long scores 0 for that destination
+    "max_bbox_span_km": 30,        // refuse to download an area wider than this
     "saturation": {                // count earning half credit (diminishing returns)
       "supermarket": 2, "bakery": 2, "pharmacy": 1,
       "gym": 1, "transit": 4, "green": 30
@@ -283,6 +284,16 @@ Everything is driven by a single JSON file. Generate a template with
   already counts as 0 m and this only has to absorb nodes placed just outside a
   wall. Raise it and genuinely distinct neighbouring shops start merging; 0
   merges only nodes that fall exactly on the outline.
+
+- **`max_bbox_span_km`** — A sanity check on how far apart your addresses are,
+  not a scoring anchor. Everything you list has to fit inside a box this wide, or
+  the run stops *before* the OpenStreetMap download with a message naming the
+  address that is furthest from your candidates. It exists because the usual
+  cause of a huge search area is a typo: an address that geocoded to the wrong
+  city produces a box hundreds of km across, and asking Overpass for that much
+  pedestrian network is a several-minute hang ending in a rejection. 30 km covers
+  any single-city search; raise it if you are genuinely comparing flats across a
+  region.
 
 - **`projected_crs`** — Coordinate reference system for metric distance
   calculations. `"auto"` picks the correct UTM zone for your region. Override

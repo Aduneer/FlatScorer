@@ -33,6 +33,7 @@ from FlatScorer import (
     NARROW_MARGIN_THRESHOLD,
     SCORE_SCALE_MAX,
     FlatScorer,
+    SearchAreaError,
     validate_config,
     weight_shares,
 )
@@ -835,11 +836,21 @@ elif selected_nav.startswith("⚖️"):
             help="Distance from a busy road at which the quiet term maxes out. Raising it no longer inflates noise's influence — the term is scaled by the cap.",
         )
 
-    st.session_state.params["projected_crs"] = st.text_input(
-        "Projected CRS",
-        value=st.session_state.params.get("projected_crs", "auto"),
-        help="'auto' picks the correct UTM zone, or provide EPSG code (e.g. EPSG:25832).",
-    )
+    p5, p6 = st.columns([3, 1])
+    with p5:
+        st.session_state.params["projected_crs"] = st.text_input(
+            "Projected CRS",
+            value=st.session_state.params.get("projected_crs", "auto"),
+            help="'auto' picks the correct UTM zone, or provide EPSG code (e.g. EPSG:25832).",
+        )
+    with p6:
+        st.session_state.params["max_bbox_span_km"] = st.number_input(
+            "Max search span (km)",
+            min_value=1,
+            value=int(st.session_state.params.get("max_bbox_span_km", DEFAULT_PARAMS["max_bbox_span_km"])),
+            step=5,
+            help="Refuses the OpenStreetMap download if the addresses spread further apart than this — which almost always means one of them geocoded to the wrong city. Raise it for a genuinely region-wide search.",
+        )
 
     st.session_state.params["show_walk_routes"] = st.checkbox(
         "Show predicted walking routes on map by default",
@@ -907,6 +918,14 @@ elif selected_nav.startswith("🚀"):
                     "failed_candidates": scorer.failed_candidates,
                     "failed_destinations": scorer.failed_destinations,
                 }
+            except SearchAreaError as e:
+                # Not a crash but a rejected input, and the message already names
+                # the address to fix - so say that rather than "execution failed".
+                st.session_state.last_result = {
+                    "error": str(e),
+                    "error_title": "Addresses are too far apart to search",
+                    "log": log_capture.getvalue(),
+                }
             except Exception as e:  # noqa: BLE001 - run() can raise from geopandas/osmnx/networkx; surface any failure in the UI instead of crashing
                 st.session_state.last_result = {"error": str(e), "log": log_capture.getvalue()}
 
@@ -914,7 +933,8 @@ elif selected_nav.startswith("🚀"):
     if result:
         st.markdown("---")
         if "error" in result:
-            st.error(f"Execution failed: {result['error']}")
+            title = result.get("error_title", "Execution failed")
+            st.error(f"{title}: {result['error']}")
             with st.expander("Detailed Run Log"):
                 st.text(result["log"])
         else:

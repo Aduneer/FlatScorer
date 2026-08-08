@@ -1047,3 +1047,258 @@ def test_poi_dedupe_tolerance_is_validated():
 def test_a_zero_poi_dedupe_tolerance_is_allowed():
     """Unlike the normalization anchors, 0 is meaningful here."""
     assert fs.validate_config(valid_config(parameters={"poi_dedupe_tolerance_m": 0})) == []
+
+
+# ------------------------------------------------------------ search area guard --
+
+# Three points around Dupont Circle, plus one destination that is either in DC
+# or - for the wrong-city case - in Berlin, Germany. UTM 18N covers DC.
+DC_CRS = "EPSG:32618"
+DC_CANDIDATES = {
+    "candidate 'Flat A' (1500 Connecticut Ave NW)": (38.9097, -77.0434),
+    "candidate 'Flat B' (2100 Pennsylvania Ave NW)": (38.9009, -77.0477),
+    "candidate 'Flat C' (1400 14th St NW)": (38.9091, -77.0320),
+}
+DC_WORK = {"destination 'Work' (1600 Pennsylvania Ave NW)": (38.8977, -77.0365)}
+WRONG_CITY_WORK = {"destination 'Work' (Unter den Linden)": (52.5170, 13.3889)}
+
+
+def test_a_single_city_search_passes_the_guard():
+    span = fs.check_search_area(dict(DC_CANDIDATES, **DC_WORK), DC_CRS,
+                                centre_labels=DC_CANDIDATES)
+    assert span < 2.0, "these addresses are all within ~1.5 km of each other"
+
+
+def test_a_destination_in_the_wrong_city_is_rejected():
+    with pytest.raises(fs.SearchAreaError) as excinfo:
+        fs.check_search_area(dict(DC_CANDIDATES, **WRONG_CITY_WORK), DC_CRS,
+                             centre_labels=DC_CANDIDATES)
+    assert excinfo.value.span_km > 1000
+
+
+def test_the_message_names_the_offending_destination():
+    """'bbox too large' sends the user back to guessing; the address does not."""
+    with pytest.raises(fs.SearchAreaError) as excinfo:
+        fs.check_search_area(dict(DC_CANDIDATES, **WRONG_CITY_WORK), DC_CRS,
+                             centre_labels=DC_CANDIDATES)
+    message = str(excinfo.value)
+    assert "destination 'Work'" in message
+    assert "Unter den Linden" in message
+    assert "Flat A" not in message, "the candidates are not the problem"
+    assert "max_bbox_span_km" in message, "the message has to say how to override it"
+
+
+def test_the_outlier_is_measured_from_the_candidates_not_from_everything():
+    """Measured from the candidates, the outlier accounts for the whole span.
+
+    Measured from the midpoint of *all* the points it would account for only a
+    fraction of it - the wrong address would drag the reported centre towards
+    itself and then look less far from it than it is.
+    """
+    points = dict(DC_CANDIDATES, **WRONG_CITY_WORK)
+
+    def distance_reported(**kwargs) -> fs.SearchAreaError:
+        with pytest.raises(fs.SearchAreaError) as excinfo:
+            fs.check_search_area(points, DC_CRS, **kwargs)
+        return excinfo.value
+
+    from_candidates = distance_reported(centre_labels=DC_CANDIDATES)
+    from_everything = distance_reported()
+
+    assert from_candidates.outlier in WRONG_CITY_WORK
+    # Three DC points against one in Berlin: the wrong address pulls the overall
+    # midpoint a quarter of the way towards itself, and so understates its own
+    # distance by that much. Anchoring on the candidates reports the full gap.
+    assert from_candidates.outlier_km == pytest.approx(from_everything.outlier_km * 4 / 3, rel=0.02)
+
+
+def test_raising_the_threshold_lets_a_large_search_through():
+    points = dict(DC_CANDIDATES, **WRONG_CITY_WORK)
+    span = fs.check_search_area(points, DC_CRS, max_span_km=10_000,
+                                centre_labels=DC_CANDIDATES)
+    assert span > 1000
+
+
+def test_the_span_is_measured_in_metres_not_degrees():
+    """A degree of longitude is ~68 km at 52 deg N, not 111 km - the bug this
+    guard must not repeat. 0.5 deg apart is ~34 km there, over a 30 km limit but
+    under it if the box is (wrongly) judged in degrees scaled by 111 km... and
+    well over if judged the other way. Pin the honest number."""
+    points = {"candidate 'A' (west)": (52.0, 13.0), "candidate 'B' (east)": (52.0, 13.5)}
+    span = fs.check_search_area(points, BERLIN_CRS, max_span_km=100)
+    assert span == pytest.approx(34.2, rel=0.02)
+
+
+def test_an_empty_point_set_spans_nothing():
+    assert fs.check_search_area({}, DC_CRS) == 0.0
+
+
+def test_the_guard_falls_back_to_all_points_when_no_centre_is_given():
+    with pytest.raises(fs.SearchAreaError) as excinfo:
+        fs.check_search_area(dict(DC_CANDIDATES, **WRONG_CITY_WORK), DC_CRS)
+    # Centre is now the midpoint of the four, so both ends are ~3,200 km out and
+    # the naming is arbitrary - but it must still raise rather than crash.
+    assert excinfo.value.outlier is not None
+
+
+def test_max_bbox_span_km_is_validated():
+    assert "max_bbox_span_km" in only_problem(valid_config(parameters={"max_bbox_span_km": 0}))
+
+
+def test_search_area_error_is_a_value_error():
+    """The GUI catches broad Exception; the CLI relies on ValueError."""
+    assert issubclass(fs.SearchAreaError, ValueError)
+
+
+def test_run_rejects_a_wrong_city_destination_before_downloading(monkeypatch):
+    """The whole point is failing *before* the multi-minute download, not after."""
+    coords = {
+        "1 Main St": (38.9097, -77.0434),
+        "2 Office Rd": (52.5170, 13.3889),
+    }
+    monkeypatch.setattr(fs, "geocode_safe", lambda addr, label, **kw: coords[addr])
+
+    def must_not_be_called(*args, **kwargs):
+        raise AssertionError("started an OpenStreetMap download despite an implausible bbox")
+
+    monkeypatch.setattr(fs, "query_with_retry", must_not_be_called)
+
+    scorer = fs.FlatScorer(valid_config(), verbose=False)
+    with pytest.raises(fs.SearchAreaError) as excinfo:
+        scorer.run()
+    assert "2 Office Rd" in str(excinfo.value)
+
+
+def test_run_accepts_a_same_city_config(monkeypatch):
+    """The guard must not fire on an ordinary search; stop at the download."""
+    coords = {
+        "1 Main St": (38.9097, -77.0434),
+        "2 Office Rd": (38.8977, -77.0365),
+    }
+    monkeypatch.setattr(fs, "geocode_safe", lambda addr, label, **kw: coords[addr])
+    monkeypatch.setattr(fs, "query_with_retry", lambda fn, **kw: (_ for _ in ()).throw(
+        RuntimeError("reached the download")))
+
+    scorer = fs.FlatScorer(valid_config(), verbose=False)
+    with pytest.raises(RuntimeError, match="reached the download"):
+        scorer.run()
+
+
+# ------------------------------------------------------- destination node cache --
+
+def two_node_graph() -> nx.MultiDiGraph:
+    G = nx.MultiDiGraph(crs="EPSG:4326")
+    G.add_node(1, x=13.0, y=52.0)
+    G.add_node(2, x=13.01, y=52.0)
+    G.add_edge(1, 2, length=1000.0)
+    return G
+
+
+def test_a_precomputed_dest_node_gives_the_identical_route():
+    """The cache is an optimisation: passing nodes must change nothing at all."""
+    G = two_node_graph()
+    orig, dest = (52.0, 13.0), (52.0, 13.01)
+
+    without = fs.walk_route(G, orig, dest, projected_crs=BERLIN_CRS)
+    with_nodes = fs.walk_route(G, orig, dest, projected_crs=BERLIN_CRS,
+                               orig_node=fs.nearest_node(G, orig),
+                               dest_node=fs.nearest_node(G, dest))
+    assert with_nodes == without
+
+
+def test_precomputed_nodes_skip_the_lookup_entirely(monkeypatch):
+    def must_not_be_called(*args, **kwargs):
+        raise AssertionError("nearest_nodes ran despite both endpoints being supplied")
+
+    monkeypatch.setattr(fs.ox.distance, "nearest_nodes", must_not_be_called)
+    minutes, _ = fs.walk_route(two_node_graph(), (52.0, 13.0), (52.0, 13.01),
+                               orig_node=1, dest_node=2)
+    assert minutes == pytest.approx(1000.0 / 83.33, rel=1e-6)
+
+
+def test_omitting_the_nodes_still_resolves_them(monkeypatch):
+    """Existing callers pass coordinates only; that path has to keep working."""
+    calls = []
+    real = fs.ox.distance.nearest_nodes
+
+    def counting(G, x, y, **kwargs):
+        calls.append((x, y))
+        return real(G, x, y, **kwargs)
+
+    monkeypatch.setattr(fs.ox.distance, "nearest_nodes", counting)
+    fs.walk_route(two_node_graph(), (52.0, 13.0), (52.0, 13.01))
+    assert len(calls) == 2
+
+
+# A candidate and two destinations strung along one line, at known edge lengths:
+#   flat --1000m-- Near Office --2000m-- Far Office
+CHAIN_COORDS = {
+    "1 Main St": (52.0, 13.0),
+    "2 Office Rd": (52.0, 13.01),
+    "3 Far Office Rd": (52.0, 13.02),
+}
+
+
+def chain_graph() -> nx.MultiDiGraph:
+    G = nx.MultiDiGraph(crs="EPSG:4326")
+    for node, (lat, lon) in zip((1, 2, 3), CHAIN_COORDS.values()):
+        G.add_node(node, x=lon, y=lat)
+    for a, b, length in ((1, 2, 1000.0), (2, 3, 2000.0)):
+        G.add_edge(a, b, length=length)
+        G.add_edge(b, a, length=length)
+    return G
+
+
+@pytest.fixture
+def offline_run(monkeypatch, tmp_path):
+    """Drive run() end to end with a tiny graph and no POIs, no network at all."""
+    monkeypatch.setattr(fs, "geocode_safe", lambda addr, label, **kw: CHAIN_COORDS[addr])
+
+    responses = iter([chain_graph(), gpd.GeoDataFrame()])
+    monkeypatch.setattr(fs, "query_with_retry", lambda fn, **kw: next(responses))
+
+    def run(config: dict) -> pd.DataFrame:
+        config["output"] = {
+            "csv_file": str(tmp_path / "scores.csv"),
+            "html_file": str(tmp_path / "map.html"),
+        }
+        return fs.FlatScorer(config, verbose=False).run()
+
+    return run
+
+
+def test_each_destination_keeps_its_own_cached_node(offline_run):
+    """The cache is keyed per destination; sharing one node silently swaps times.
+
+    That is the failure mode worth pinning - a wrong node produces a plausible
+    number rather than an error, so nothing else in the run would notice.
+    """
+    df = offline_run(valid_config(destinations={
+        "Near Office": {"address": "2 Office Rd", "weight": 0.2},
+        "Far Office": {"address": "3 Far Office Rd", "weight": 0.2},
+    }))
+    row = df.iloc[0]
+    assert row["near_office_walk_min"] == pytest.approx(1000.0 / 83.33, abs=0.05)
+    assert row["far_office_walk_min"] == pytest.approx(3000.0 / 83.33, abs=0.05)
+
+
+def test_the_node_cache_does_not_change_the_commute_times(monkeypatch, offline_run):
+    """Acceptance criterion for the optimisation: identical output, fewer lookups."""
+    lookups = []
+    real = fs.ox.distance.nearest_nodes
+
+    def counting(G, x, y, **kwargs):
+        lookups.append((x, y))
+        return real(G, x, y, **kwargs)
+
+    monkeypatch.setattr(fs.ox.distance, "nearest_nodes", counting)
+
+    config = valid_config(destinations={
+        "Near Office": {"address": "2 Office Rd", "weight": 0.2},
+        "Far Office": {"address": "3 Far Office Rd", "weight": 0.2},
+    })
+    df = offline_run(config)
+
+    # 1 candidate + 2 destinations = 3 lookups, not the 2*1*2 = 4 of one per leg.
+    assert len(lookups) == 3
+    assert df.iloc[0]["near_office_walk_min"] == pytest.approx(1000.0 / 83.33, abs=0.05)
