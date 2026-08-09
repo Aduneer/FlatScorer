@@ -1267,7 +1267,8 @@ def offline_run(monkeypatch, tmp_path):
     responses: list[Any] = []
     monkeypatch.setattr(fs, "query_with_retry", lambda fn, **kw: responses.pop(0))
 
-    def run(config: dict, graphs: dict[str, nx.MultiDiGraph] | None = None) -> pd.DataFrame:
+    def run(config: dict, graphs: dict[str, nx.MultiDiGraph] | None = None,
+            progress=None) -> pd.DataFrame:
         config["output"] = {
             "csv_file": str(tmp_path / "scores.csv"),
             "html_file": str(tmp_path / "map.html"),
@@ -1279,7 +1280,7 @@ def offline_run(monkeypatch, tmp_path):
         ))
         responses[:] = [(graphs or {}).get(mode) or chain_graph() for mode in modes]
         responses.append(gpd.GeoDataFrame())
-        return fs.FlatScorer(config, verbose=False).run()
+        return fs.FlatScorer(config, verbose=False, progress=progress).run()
 
     return run
 
@@ -1579,3 +1580,102 @@ def test_a_mixed_map_names_its_route_layer_for_both_modes(offline_run, tmp_path)
     assert "Predicted walking routes" in walk_only
     assert "Predicted commute routes" in mixed
     assert "Predicted walking routes" not in mixed
+
+
+# ------------------------------------------------------------- progress reporting --
+
+class ProgressLog:
+    """Collects every (fraction, label) the engine reports."""
+
+    def __init__(self):
+        self.calls: list[tuple[float, str]] = []
+
+    def __call__(self, fraction: float, label: str):
+        self.calls.append((fraction, label))
+
+    @property
+    def fractions(self) -> list[float]:
+        return [fraction for fraction, _ in self.calls]
+
+    @property
+    def labels(self) -> list[str]:
+        return [label for _, label in self.calls]
+
+    def mentioning(self, needle: str) -> list[str]:
+        return [label for label in self.labels if needle.lower() in label.lower()]
+
+
+def test_progress_runs_from_zero_to_one_without_going_backwards(offline_run):
+    """A bar that jumps backwards is worse than no bar - pin the invariant."""
+    seen = ProgressLog()
+    offline_run(one_destination_config(), progress=seen)
+
+    assert seen.fractions, "no progress was reported at all"
+    assert seen.fractions == sorted(seen.fractions), seen.fractions
+    assert 0.0 <= seen.fractions[0] < 1.0
+    assert seen.fractions[-1] == 1.0
+    assert all(0.0 <= fraction <= 1.0 for fraction in seen.fractions)
+
+
+def test_progress_labels_name_the_step_that_is_starting(offline_run):
+    """The label is the whole point: "downloading" is what stops it reading as a hang."""
+    seen = ProgressLog()
+    offline_run(one_destination_config(), progress=seen)
+
+    assert seen.mentioning("Flat A"), seen.labels
+    assert seen.mentioning("Near Office"), seen.labels
+    assert seen.mentioning("street network"), seen.labels
+    assert seen.mentioning("points of interest") or seen.mentioning("shops"), seen.labels
+    assert seen.mentioning("Scoring"), seen.labels
+
+
+def test_the_slow_steps_carry_most_of_the_bar(offline_run):
+    """Weighted, not counted: equal steps would park the bar during the downloads.
+
+    The two OpenStreetMap downloads dominate a real run's wall clock, so together
+    they have to own most of the bar's travel - otherwise it races to 80% and
+    then sits there for a minute, which is the failure mode being fixed.
+    """
+    seen = ProgressLog()
+    offline_run(one_destination_config(), progress=seen)
+
+    at = {label: fraction for fraction, label in seen.calls}
+    network = next(f for label, f in at.items() if "street network" in label)
+    pois = next(f for label, f in at.items() if "OpenStreetMap" in label and "network" not in label)
+    scoring = next(f for label, f in at.items() if label.startswith("Scoring"))
+    assert (scoring - network) > 0.5, f"downloads own only {scoring - network:.0%} of the bar"
+    assert network < pois < scoring
+
+
+def test_progress_reaches_one_even_when_a_candidate_fails_to_geocode(monkeypatch, offline_run):
+    """The plan is sized from the config, so a dropped candidate over-estimates it.
+
+    Without the explicit finish, the bar would stop short of full on exactly the
+    runs where the user is most likely to be staring at it.
+    """
+    real = fs.geocode_safe
+    monkeypatch.setattr(fs, "geocode_safe",
+                        lambda addr, label, **kw: None if label == "Flat B" else real(addr, label, **kw))
+
+    seen = ProgressLog()
+    config = one_destination_config()
+    config["candidates"].append({"name": "Flat B", "address": "3 Far Office Rd", "rent": 1500})
+    offline_run(config, progress=seen)
+
+    assert seen.fractions[-1] == 1.0
+    assert seen.fractions == sorted(seen.fractions)
+
+
+def test_a_mixed_config_announces_both_network_downloads(offline_run):
+    seen = ProgressLog()
+    offline_run(mixed_mode_config(), graphs={"bike": bike_graph()}, progress=seen)
+
+    assert seen.mentioning("walking street network"), seen.labels
+    assert seen.mentioning("cycling street network"), seen.labels
+
+
+def test_progress_is_optional_and_changes_nothing(offline_run):
+    """The CLI passes no callback; that path has to stay byte-for-byte the same."""
+    silent = offline_run(one_destination_config())
+    watched = offline_run(one_destination_config(), progress=ProgressLog())
+    pd.testing.assert_frame_equal(silent, watched)

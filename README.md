@@ -96,6 +96,11 @@ streamlit run streamlit_app.py
 It reuses `FlatScorer.py` directly, so results are identical to the CLI —
 this is just a friendlier way to build the config and view the output.
 
+A run takes a couple of minutes, most of it waiting on Nominatim's one-request-
+per-second geocoding and the OpenStreetMap downloads. The Run page shows a
+progress bar naming each step as it starts ("Downloading the cycling street
+network..."), so a slow run reads as slow rather than as a hang.
+
 <p align="center">
   <img src="assets/gui_preview.png" alt="FlatScorer Streamlit GUI" width="800"/>
 </p>

@@ -150,6 +150,21 @@ TRAVEL_MODES = {
 # identically - including paying for exactly one street-network download.
 DEFAULT_TRAVEL_MODE = "walk"
 
+# Roughly how long each pipeline step takes relative to the others, used *only*
+# to place a caller's progress bar. They are wall-clock ratios, not step counts,
+# because the steps differ by more than an order of magnitude: a geocode is one
+# rate-limited second while a street-network download is tens of them. Counting
+# steps equally would park the bar at 20% for most of the run, which is barely
+# better than the spinner it replaces. They do not have to be exact - the bar
+# only has to keep moving and finish where it says it will.
+PROGRESS_WEIGHTS = {
+    "geocode": 1.0,   # per address
+    "graph": 25.0,    # per travel mode; the single slowest thing here
+    "pois": 20.0,
+    "score": 2.0,     # per candidate
+    "output": 1.0,    # CSV, sensitivity report and map together
+}
+
 DEFAULT_WEIGHTS = {
     "supermarket": 0.30,
     "bakery": 0.10,
@@ -816,9 +831,19 @@ def route_time(G: nx.MultiDiGraph, orig: tuple[float, float], dest: tuple[float,
 class FlatScorer:
     """Multi-criteria apartment scoring engine."""
 
-    def __init__(self, config: dict[str, Any], verbose: bool = True):
+    def __init__(self, config: dict[str, Any], verbose: bool = True,
+                 progress: Any = None):
         self.config = config
         self.verbose = verbose
+
+        # Optional `callable(fraction, label)` invoked as run() moves through the
+        # pipeline: `fraction` is 0..1 of the work finished, `label` names the
+        # step now starting. The GUI drives a progress bar with it; the CLI
+        # passes nothing and every call below becomes a no-op.
+        self.progress = progress
+        self._progress_total = 0.0
+        self._progress_done = 0.0
+        self._progress_pending = 0.0
 
         self.candidates_raw = config.get("candidates", [])
         self.destinations_config = config.get("destinations", {})
@@ -850,6 +875,44 @@ class FlatScorer:
     def _log(self, msg: str):
         if self.verbose:
             print(msg)
+
+    def _plan_progress(self) -> float:
+        """Total weight of the run about to start, from the config alone.
+
+        Everything here is known before the first network call, which is the
+        point: a bar whose maximum is discovered halfway through is a bar that
+        jumps backwards. Geocoding failures make the plan an *over*-estimate
+        (fewer candidates to score), so `_progress_finish` pins the end at 1.0
+        rather than letting the bar stop short.
+        """
+        destinations = [d for d in self.destinations_config.values() if isinstance(d, dict)]
+        modes = {destination_mode(d) for d in destinations}
+        return (PROGRESS_WEIGHTS["geocode"] * (len(self.candidates_raw) + len(destinations))
+                + PROGRESS_WEIGHTS["graph"] * len(modes)
+                + PROGRESS_WEIGHTS["pois"]
+                + PROGRESS_WEIGHTS["score"] * len(self.candidates_raw)
+                + PROGRESS_WEIGHTS["output"])
+
+    def _progress_step(self, label: str, weight: float = 0.0):
+        """Announce the step about to run, banking the weight of the previous one.
+
+        The fraction describes what has *finished* while the label describes what
+        is *starting*, which is the pairing a progress bar wants: someone reading
+        "Downloading the cycling street network..." at 35% is being told where the
+        wait is, not where it was. Carrying the previous step's weight here is
+        what lets each call name one thing and cost one thing.
+        """
+        if self.progress is None:
+            return
+        self._progress_done += self._progress_pending
+        self._progress_pending = weight
+        fraction = min(self._progress_done / self._progress_total, 1.0) if self._progress_total > 0 else 1.0
+        self.progress(fraction, label)
+
+    def _progress_finish(self, label: str = "Finished"):
+        """Pin the bar at 1.0, whatever the plan estimated."""
+        if self.progress is not None:
+            self.progress(1.0, label)
 
     def mode_speed(self, mode: str) -> float:
         """The configured pace, in m/min, for one travel mode."""
@@ -1026,6 +1089,10 @@ class FlatScorer:
         if problems:
             raise ConfigError(problems)
 
+        self._progress_total = self._plan_progress()
+        self._progress_done = 0.0
+        self._progress_pending = 0.0
+
         self._log("Geocoding candidate apartment addresses...")
         self.failed_candidates = []
         self.failed_destinations = []
@@ -1033,6 +1100,7 @@ class FlatScorer:
         for candidate in self.candidates_raw:
             name = candidate["name"]
             addr = candidate["address"]
+            self._progress_step(f"Geocoding candidate '{name}'...", PROGRESS_WEIGHTS["geocode"])
             # validate_config has already guaranteed this parses to a positive
             # number; coerce so a config written as "1800" still scores as 1800.
             rent = _as_number(candidate["rent"])
@@ -1055,6 +1123,7 @@ class FlatScorer:
         resolved_destinations = {}
         for dest_name, dest_info in self.destinations_config.items():
             addr = dest_info["address"]
+            self._progress_step(f"Geocoding destination '{dest_name}'...", PROGRESS_WEIGHTS["geocode"])
             coords = geocode_safe(addr, dest_name)
             if coords:
                 resolved_destinations[dest_name] = {
@@ -1118,6 +1187,8 @@ class FlatScorer:
         for mode in modes_in_use:
             spec = TRAVEL_MODES[mode]
             self._log(f"\nDownloading the {spec['label']} street network from OpenStreetMap...")
+            self._progress_step(f"Downloading the {spec['label']} street network from OpenStreetMap "
+                                "(the slowest step - a minute is normal)...", PROGRESS_WEIGHTS["graph"])
             # network_type is bound as a default rather than closed over, so the
             # lambda can't be caught out by the loop variable moving on.
             graphs[mode] = query_with_retry(
@@ -1127,6 +1198,8 @@ class FlatScorer:
             self._log("\nNo destinations to route to, so no street network is needed.")
 
         self._log("Downloading points of interest (POIs) from OpenStreetMap...")
+        self._progress_step("Downloading shops, transit stops and green space from OpenStreetMap...",
+                            PROGRESS_WEIGHTS["pois"])
         pois = query_with_retry(get_pois)
 
         supermarkets = safe_filter(pois, "shop", "supermarket")
@@ -1194,6 +1267,7 @@ class FlatScorer:
         rows = []
 
         for name, info in resolved_candidates.items():
+            self._progress_step(f"Scoring '{name}'...", PROGRESS_WEIGHTS["score"])
             lat, lon = info["coords"]
             rent = info["rent"]
             # Per mode for the same reason the destination cache is: this flat's
@@ -1252,6 +1326,9 @@ class FlatScorer:
             row["lon"] = lon
             rows.append(row)
 
+        self._progress_step("Ranking, checking weight sensitivity and building the map...",
+                            PROGRESS_WEIGHTS["output"])
+
         df = pd.DataFrame(rows).sort_values("score", ascending=False)
         self._log(f"\nScores are on a fixed 0-{SCORE_SCALE_MAX:.0f} scale and are comparable across runs.")
         self._log(df.drop(columns=["lat", "lon"]).to_string(index=False))
@@ -1268,6 +1345,7 @@ class FlatScorer:
         html_file = self.output_config.get("html_file", "apartment_map.html")
         self.generate_map(df, resolved_destinations, html_file, routes_by_candidate)
 
+        self._progress_finish()
         return df
 
     def generate_map(self, df: pd.DataFrame, resolved_destinations: dict[str, Any], html_file: str, routes_by_candidate: dict[str, dict[str, list[tuple[float, float]]]] | None = None):

@@ -602,10 +602,12 @@ with st.sidebar:
             width="stretch",
         )
 
+    # The "this takes a few minutes" half of this note used to live here and was
+    # routinely missed down in the corner. It now sits beside the Run button,
+    # with a progress bar underneath it doing the actual reassuring.
     st.caption(
-        "FlatScorer geocodes via Nominatim and pulls OSM data via Overpass. "
-        "A run over 3-4 candidates typically takes 1-3 minutes depending on "
-        "OSM server load — this is normal, not a hang."
+        "FlatScorer geocodes via Nominatim and pulls OSM data via Overpass, "
+        "under those services' usage policies."
     )
 
 
@@ -939,6 +941,15 @@ elif selected_nav.startswith("🚀"):
             f"⚠️ **{len(config_problems)} problem(s) to fix before running:**\n\n"
             + "\n".join(f"- {problem}" for problem in config_problems)
         )
+    else:
+        # Right under the button, where someone about to wait will actually read
+        # it. The sidebar caption saying the same thing was easy to miss, and the
+        # progress bar below then shows it live rather than just asserting it.
+        st.caption(
+            "⏱️ A run takes roughly 1–3 minutes: addresses are geocoded one per second "
+            "(Nominatim's rate limit), then the street network and points of interest are "
+            "downloaded from OpenStreetMap. The progress bar reports each step as it starts."
+        )
 
     if run_clicked:
         work_dir = tempfile.mkdtemp(prefix="flatscorer_")
@@ -946,10 +957,18 @@ elif selected_nav.startswith("🚀"):
         config["output"]["html_file"] = os.path.join(work_dir, "apartment_map.html")
 
         log_capture = io.StringIO()
-        with st.spinner("Geocoding addresses, downloading OpenStreetMap data, and calculating scores..."):
+        # A determinate bar rather than a spinner: the engine reports each step
+        # as it begins, so the wait stops looking like a hang. `run()` is
+        # synchronous, so these updates are pushed from this same script run.
+        progress_bar = st.progress(0.0, text="Starting...")
+
+        def report_progress(fraction: float, label: str):
+            progress_bar.progress(fraction, text=label)
+
+        try:
             try:
                 with contextlib.redirect_stdout(log_capture):
-                    scorer = FlatScorer(config, verbose=True)
+                    scorer = FlatScorer(config, verbose=True, progress=report_progress)
                     df = scorer.run()
                 with open(config["output"]["html_file"], encoding="utf-8") as f:
                     map_html = f.read()
@@ -973,6 +992,11 @@ elif selected_nav.startswith("🚀"):
                 }
             except Exception as e:  # noqa: BLE001 - run() can raise from geopandas/osmnx/networkx; surface any failure in the UI instead of crashing
                 st.session_state.last_result = {"error": str(e), "log": log_capture.getvalue()}
+        finally:
+            # The results (or the error) render below and say everything the bar
+            # would; a bar left at 100% just pushes them down the page. `finally`
+            # so a failed run doesn't strand it mid-way either.
+            progress_bar.empty()
 
     result = st.session_state.get("last_result")
     if result:
