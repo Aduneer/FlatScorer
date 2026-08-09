@@ -105,18 +105,49 @@ this is just a friendlier way to build the config and view the output.
 For each candidate apartment, FlatScorer:
 
 1. **Geocodes** all addresses via Nominatim (through OSMnx).
-2. **Downloads** the walking street network and points of interest for the
-   bounding region from the Overpass API (with automatic mirror failover).
+2. **Downloads** a street network per travel mode your destinations actually use
+   (pedestrian, cycling, or both) plus the points of interest for the bounding
+   region, from the Overpass API (with automatic mirror failover).
 3. **Deduplicates POIs** mapped both as a node and as a building outline
    (see [Duplicate POIs](#duplicate-pois)).
 4. **Counts nearby amenities** within a configurable radius (default 500 m):
    supermarkets, bakeries, pharmacies, gyms, bus/tram stops.
 5. **Measures green space** — park and forest polygon area plus point features.
 6. **Estimates noise exposure** via distance to the nearest primary/secondary road.
-7. **Routes walking commutes** to each of your defined destinations over the
-   real pedestrian network (~5 km/h).
+7. **Routes commutes** to each of your defined destinations over the real
+   network for that destination's travel mode — walking (~5 km/h) or cycling
+   (~15 km/h), see [Travel modes](#travel-modes).
 8. **Normalizes every metric** onto a common 0–1 scale.
 9. **Computes a weighted average** of those normalized values, on a 0–10 scale.
+
+### Travel modes
+
+A destination declares how you get there with `"mode": "walk"` (the default) or
+`"mode": "bike"`. It changes the answer substantially: a 35-minute walk is often
+a 12-minute cycle, and which flats look good depends on which of those you meant.
+
+```jsonc
+"destinations": {
+  "Office":     { "address": "...", "weight": 0.20, "mode": "bike" },
+  "Supermarket":{ "address": "...", "weight": 0.10 }               // walks, as before
+}
+```
+
+Each mode routes over **its own** street network, downloaded separately. That is
+deliberate and not negotiable: the pedestrian graph carries footways a bike may
+not use and drops roads it may, so a cycling time computed on it would be wrong
+in both directions at once — and wrong invisibly, since it still produces a
+plausible number.
+
+The networks are downloaded lazily, one per mode your destinations actually
+mention. An all-walk config — every config written before this existed, and the
+shipped example — makes exactly one download, as it always did. Only a genuinely
+mixed config pays for a second.
+
+Each mode has its own pace (`walking_speed_m_per_min`, `cycling_speed_m_per_min`)
+and its own column in the results: `office_bike_min` beside `supermarket_walk_min`,
+so a cycled commute is never reported under a heading that says "walk". On the map,
+cycled legs are drawn dashed.
 
 ### Duplicate POIs
 
@@ -195,7 +226,7 @@ thing in every run — and a field of similar flats is allowed to look similar.
 |---|---|
 | Terminal table | Ranked summary printed to stdout |
 | `apartment_scores.csv` | Full metrics for every candidate |
-| `apartment_map.html` | Interactive Folium map with color-coded pins and predicted walking routes |
+| `apartment_map.html` | Interactive Folium map with color-coded pins and predicted commute routes |
 | Sensitivity report | ±20% weight perturbation check on ranking stability |
 
 ## Configuration
@@ -214,11 +245,12 @@ Everything is driven by a single JSON file. Generate a template with
     }
   ],
 
-  // Places you commute to — each gets a walking-time column
+  // Places you commute to — each gets a travel-time column
   "destinations": {
     "Office": {
       "address": "Alexanderplatz 1, 10178 Berlin, Germany",
       "weight": 0.20,        // importance, relative to the weights below
+      "mode": "bike",        // "walk" (default) or "bike" — see Travel modes
       "icon": "briefcase",   // FontAwesome icon on the map
       "color": "blue"
     }
@@ -241,15 +273,16 @@ Everything is driven by a single JSON file. Generate a template with
     "buffer_m": 500,               // amenity search radius in meters
     "noise_cap_m": 200,            // quiet term maxes out at this distance from a busy road
     "rent_budget_eur": 2500,       // rent at/above this scores 0 on the rent term
-    "commute_cap_min": 45,         // a walk this long scores 0 for that destination
+    "commute_cap_min": 45,         // a commute this long scores 0 for that destination
     "walking_speed_m_per_min": 83.33,  // assumed pace; 83.33 m/min = 5 km/h
+    "cycling_speed_m_per_min": 250,    // assumed pace; 250 m/min = 15 km/h
     "max_bbox_span_km": 30,        // refuse to download an area wider than this
     "saturation": {                // count earning half credit (diminishing returns)
       "supermarket": 2, "bakery": 2, "pharmacy": 1,
       "gym": 1, "transit": 4, "green": 30
     },
     "projected_crs": "auto",       // auto-detect UTM zone, or e.g. "EPSG:25832"
-    "show_walk_routes": true       // draw predicted walking routes on the map by default
+    "show_walk_routes": true       // draw predicted commute routes on the map by default
   },
 
   "output": {
@@ -266,21 +299,25 @@ Everything is driven by a single JSON file. Generate a template with
   linear. Set it to the top of your budget; setting it far above your actual
   range flattens the differences between candidates.
 
-- **`commute_cap_min`** — The walk length at which a destination stops earning
+- **`commute_cap_min`** — The travel time at which a destination stops earning
   anything. Same shape as the rent term, including the same tradeoff: everything
-  past the cap scores 0, so a 50-minute walk and a 90-minute walk are
-  indistinguishable on that term. If the score breakdown shows a destination at
-  0.00 for every candidate, raise the cap (or accept that nobody is walking
-  there). Both anchors are deliberately absolute — that is what makes a score
-  mean the same thing between runs.
+  past the cap scores 0, so a 50-minute commute and a 90-minute commute are
+  indistinguishable on that term. One cap covers every mode — it is how long you
+  are willing to travel, not how far. If the score breakdown shows a destination
+  at 0.00 for every candidate, raise the cap, switch that destination to `bike`,
+  or accept that nobody is getting there. Both anchors are deliberately absolute
+  — that is what makes a score mean the same thing between runs.
 
-- **`walking_speed_m_per_min`** — The pace every routed distance is divided by to
-  get minutes. The default 83.33 m/min is 5 km/h, the usual planning figure for
-  an unhurried adult on the flat; 100 m/min (6 km/h) is a brisk walker. It only
-  means anything alongside `commute_cap_min`, because the two multiply out: a
-  slower pace makes every walk longer in minutes and so pushes more destinations
-  towards the cap. If you change one, sanity-check the other — the routed
-  distances themselves have not moved.
+- **`walking_speed_m_per_min` / `cycling_speed_m_per_min`** — The pace each mode's
+  routed distances are divided by to get minutes. The walking default 83.33 m/min
+  is 5 km/h, the usual planning figure for an unhurried adult on the flat; 100
+  m/min (6 km/h) is a brisk walker. The cycling default 250 m/min is 15 km/h,
+  urban cycling *including* junctions, lights and locking up — not the speed a fit
+  rider holds on a clear path, which is why it is well under what a bike computer
+  reports. Both only mean anything alongside `commute_cap_min`, because they
+  multiply out: a slower pace makes every commute longer in minutes and so pushes
+  more destinations towards the cap. If you change one, sanity-check the other —
+  the routed distances themselves have not moved.
 
 - **`saturation`** — The count that earns half credit for each amenity, i.e. how
   quickly more of something stops helping. Lower is easier to satisfy: at
@@ -313,11 +350,16 @@ Everything is driven by a single JSON file. Generate a template with
   destination at 0.15 against weights totalling 1.5 controls 10% of the score —
   at most 1 point out of 10, earned by living next door to it.
 
-- **`show_walk_routes`** — Whether the map's "Predicted walking routes" layer
-  starts visible. The routes trace each candidate's actual shortest path over
-  the OSM pedestrian network to every destination (color-matched to that
-  candidate's score) and can always be toggled via the map's layer control
-  regardless of this setting.
+- **Destination `mode`** — `"walk"` (the default) or `"bike"`, deciding which
+  street network this commute is routed over and which pace it is divided by.
+  See [Travel modes](#travel-modes); omitting it walks, so every config written
+  before cycling existed scores exactly as it did.
+
+- **`show_walk_routes`** — Whether the map's predicted-routes layer starts
+  visible. The routes trace each candidate's actual shortest path to every
+  destination over that destination's own network (color-matched to the
+  candidate's score, dashed for cycled legs) and can always be toggled via the
+  map's layer control regardless of this setting.
 
 ### Configuration is validated before anything runs
 
@@ -340,7 +382,8 @@ doesn't score neutrally — it scores *perfectly* on that term and tends to win.
 So a missing or non-positive rent is rejected rather than guessed at. The other
 checks cover missing names and addresses, duplicate candidate names (they'd
 silently overwrite each other), non-numeric or negative weights, an all-zero
-weight vector, and non-positive normalization anchors.
+weight vector, non-positive normalization anchors, and an unrecognised
+destination travel `mode`.
 
 In the GUI the same problems appear on the Run page and the run button stays
 disabled until they're fixed.

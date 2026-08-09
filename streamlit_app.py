@@ -30,8 +30,10 @@ import streamlit as st
 from FlatScorer import (
     DEFAULT_CONFIG,
     DEFAULT_DEST_WEIGHT,
+    DEFAULT_TRAVEL_MODE,
     NARROW_MARGIN_THRESHOLD,
     SCORE_SCALE_MAX,
+    TRAVEL_MODES,
     FlatScorer,
     SearchAreaError,
     validate_config,
@@ -60,6 +62,11 @@ COLOR_CHOICES = [
 DEFAULT_WEIGHTS = DEFAULT_CONFIG["weights"]
 DEFAULT_PARAMS = DEFAULT_CONFIG["parameters"]
 
+# Travel modes come from the engine rather than a literal here, so the dropdown
+# can never offer a mode validate_config would reject.
+MODE_CHOICES = list(TRAVEL_MODES)
+MODE_EMOJI = {"walk": "🚶", "bike": "🚴"}
+
 
 # ----------------------------------------------------------- Helper Functions --
 
@@ -76,6 +83,7 @@ def _init_state():
             "name": name,
             "address": info["address"],
             "weight": info["weight"],
+            "mode": info.get("mode", DEFAULT_TRAVEL_MODE),
             "icon": info.get("icon", "star"),
             "color": info.get("color", "blue"),
         })
@@ -122,6 +130,7 @@ def _load_config_into_state(config: dict[str, Any]):
             "name": name,
             "address": info.get("address", ""),
             "weight": info.get("weight", 0.15),
+            "mode": info.get("mode", DEFAULT_TRAVEL_MODE),
             "icon": info.get("icon", "star"),
             "color": info.get("color", "blue"),
         })
@@ -159,6 +168,9 @@ def _build_config() -> dict[str, Any]:
         destinations[row["name"]] = {
             "address": row["address"],
             "weight": float(row.get("weight", 0.15) or 0.15),
+            # A cleared mode cell arrives as None/NaN; fall back rather than
+            # writing a mode the engine would reject.
+            "mode": row.get("mode") if row.get("mode") in TRAVEL_MODES else DEFAULT_TRAVEL_MODE,
             "icon": row.get("icon", "star") or "star",
             "color": row.get("color", "blue") or "blue",
         }
@@ -653,7 +665,8 @@ elif selected_nav.startswith("📍"):
         <div class="fs-card">
             <div class="fs-card-title">📍 Commute Destinations</div>
             <div class="fs-card-desc">
-                Places you frequently travel to (e.g. work, university, gym). Each destination incurs a walking-time penalty scaled by its weight.
+                Places you frequently travel to (e.g. work, university, gym). Each destination incurs a travel-time penalty scaled by its weight,
+                routed over the real network for its travel mode — walking or cycling. Mixing modes adds one extra OpenStreetMap download.
             </div>
         </div>
         """,
@@ -671,6 +684,12 @@ elif selected_nav.startswith("📍"):
                 "Importance Weight", min_value=0.0, max_value=2.0, step=0.05,
                 help="Relative importance of this commute, competing in the same pool as the "
                      "amenity weights. See the influence table on the Weights page.",
+            ),
+            "mode": st.column_config.SelectboxColumn(
+                "Travel Mode", options=MODE_CHOICES, required=True,
+                help="How you get there. Each mode routes over its own street network at its own "
+                     "pace (set on the Weights & Parameters page) — a 35-minute walk is often a "
+                     "12-minute cycle. Using both modes costs one extra OpenStreetMap download.",
             ),
             "icon": st.column_config.SelectboxColumn("Map Icon", options=ICON_CHOICES),
             "color": st.column_config.SelectboxColumn("Map Color", options=COLOR_CHOICES),
@@ -753,7 +772,8 @@ elif selected_nav.startswith("⚖️"):
         if not dest_name:
             continue
         combined[f"dest_{dest_name}"] = float(row.get("weight", DEFAULT_DEST_WEIGHT) or 0.0)
-        dest_labels[f"dest_{dest_name}"] = f"🚶 Commute to {dest_name}"
+        mode = row.get("mode") if row.get("mode") in TRAVEL_MODES else DEFAULT_TRAVEL_MODE
+        dest_labels[f"dest_{dest_name}"] = f"{MODE_EMOJI.get(mode, '🚶')} Commute to {dest_name}"
 
     shares = weight_shares(combined)
     if sum(combined.values()) <= 0:
@@ -836,7 +856,7 @@ elif selected_nav.startswith("⚖️"):
             help="Distance from a busy road at which the quiet term maxes out. Raising it no longer inflates noise's influence — the term is scaled by the cap.",
         )
 
-    p5, p6, p7 = st.columns([2, 1, 1])
+    p5, p6, p7, p8 = st.columns([2, 1, 1, 1])
     with p5:
         st.session_state.params["projected_crs"] = st.text_input(
             "Projected CRS",
@@ -862,11 +882,25 @@ elif selected_nav.startswith("⚖️"):
         )
         st.session_state.params["walking_speed_m_per_min"] = walking_speed
         st.caption(f"≈ {walking_speed * 60 / 1000:.1f} km/h")
+    with p8:
+        cycling_speed = st.number_input(
+            "Cycling speed (m/min)",
+            min_value=1.0,
+            value=float(st.session_state.params.get(
+                "cycling_speed_m_per_min", DEFAULT_PARAMS["cycling_speed_m_per_min"])),
+            step=10.0,
+            help="Pace used for destinations set to 'bike' on the Destinations page. The default "
+                 "250 m/min (15 km/h) is urban cycling including junctions and locking up, not "
+                 "open-road speed.",
+        )
+        st.session_state.params["cycling_speed_m_per_min"] = cycling_speed
+        st.caption(f"≈ {cycling_speed * 60 / 1000:.1f} km/h")
 
     st.session_state.params["show_walk_routes"] = st.checkbox(
-        "Show predicted walking routes on map by default",
+        "Show predicted commute routes on map by default",
         value=bool(st.session_state.params.get("show_walk_routes", True)),
-        help="Draws each candidate's shortest walking path to every destination on the map. Always toggleable via the map's layer control.",
+        help="Draws each candidate's shortest path to every destination on the map, over that destination's own network. "
+             "Cycled legs are dashed. Always toggleable via the map's layer control.",
     )
 
 

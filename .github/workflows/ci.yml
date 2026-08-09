@@ -50,7 +50,7 @@ jobs:
           G.add_node(2, x=13.01, y=52.0)
           G.add_edge(1, 2, length=1000.0)
 
-          minutes, route = FlatScorer.walk_route(G, (52.0, 13.0), (52.0, 13.01))
+          minutes, route = FlatScorer.route_time(G, (52.0, 13.0), (52.0, 13.01))
           assert route == [(52.0, 13.0), (52.0, 13.01)], route
           print(f"routed OK: {minutes:.2f} min")
           PY
@@ -95,7 +95,7 @@ jobs:
           G.add_node(2, x=13.01, y=52.0)
           G.add_edge(1, 2, length=1000.0)
 
-          minutes, route = FlatScorer.walk_route(G, (52.0, 13.0), (52.0, 13.01))
+          minutes, route = FlatScorer.route_time(G, (52.0, 13.0), (52.0, 13.01))
           assert route == [(52.0, 13.0), (52.0, 13.01)], route
           print(f"routed OK: {minutes:.2f} min")
           PY

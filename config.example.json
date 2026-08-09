@@ -20,12 +20,14 @@
     "White House": {
       "address": "1600 Pennsylvania Ave NW, Washington, DC 20500, USA",
       "weight": 0.15,
+      "mode": "walk",
       "icon": "landmark",
       "color": "blue"
     },
     "Union Station": {
       "address": "50 Massachusetts Ave NE, Washington, DC 20002, USA",
       "weight": 0.15,
+      "mode": "walk",
       "icon": "train",
       "color": "red"
     }
@@ -46,6 +48,7 @@
     "rent_budget_eur": 2500,
     "commute_cap_min": 45,
     "walking_speed_m_per_min": 83.33,
+    "cycling_speed_m_per_min": 250,
     "poi_dedupe_tolerance_m": 10,
     "max_bbox_span_km": 30,
     "saturation": {

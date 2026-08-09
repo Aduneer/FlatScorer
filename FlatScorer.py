@@ -3,9 +3,9 @@
 FlatScorer — Multi-criteria apartment scoring tool.
 
 Scores candidate apartments based on nearby amenities, transit access,
-green space, road-noise proximity, walking commute to user-defined
-destinations, and rent — producing a ranked comparison table, CSV
-export, interactive Folium map, and weight-sensitivity analysis.
+green space, road-noise proximity, walking or cycling commute to
+user-defined destinations, and rent — producing a ranked comparison table,
+CSV export, interactive Folium map, and weight-sensitivity analysis.
 
 Usage:
     python FlatScorer.py --generate-config config.json
@@ -108,6 +108,48 @@ DEFAULT_MAX_BBOX_SPAN_KM = 30.0
 # only mean what they say together - lower this and every commute term drops.
 DEFAULT_WALKING_SPEED_M_PER_MIN = 83.33
 
+# Assumed cycling pace, in metres per minute: 250 is 15 km/h, the usual planning
+# figure for urban cycling *including* junctions, lights and locking up - not the
+# speed a fit rider holds on a clear path. Same relationship to `commute_cap_min`
+# as the walking pace above.
+DEFAULT_CYCLING_SPEED_M_PER_MIN = 250.0
+
+# Travel modes a destination may declare via `"mode"`. Each entry names
+# everything that is mode-specific about routing a commute, so adding a mode is a
+# table entry rather than a branch in `run()`:
+#   network_type   - the OSMnx street network to download for it
+#   speed_param    - the `parameters` key holding its pace, which is also the
+#                    FlatScorer attribute the pace is read back from
+#   column_suffix  - what the destination's minutes column is called, so a
+#                    cycling commute is never reported in a column saying "walk"
+#   label/verb     - wording for the run log and the map popups
+#
+# The networks genuinely differ - the walk graph carries footways bikes may not
+# use and drops roads they may - so a mode always routes over its own graph. A
+# bike time computed on the walk network would be wrong in both directions at
+# once, and wrong invisibly.
+TRAVEL_MODES = {
+    "walk": {
+        "network_type": "walk",
+        "speed_param": "walking_speed_m_per_min",
+        "column_suffix": "walk_min",
+        "label": "walking",
+        "verb": "walk",
+    },
+    "bike": {
+        "network_type": "bike",
+        "speed_param": "cycling_speed_m_per_min",
+        "column_suffix": "bike_min",
+        "label": "cycling",
+        "verb": "cycle",
+    },
+}
+
+# What a destination that doesn't declare a mode gets. Every config written
+# before cycling existed is an all-walk config, and has to keep scoring
+# identically - including paying for exactly one street-network download.
+DEFAULT_TRAVEL_MODE = "walk"
+
 DEFAULT_WEIGHTS = {
     "supermarket": 0.30,
     "bakery": 0.10,
@@ -156,12 +198,14 @@ DEFAULT_CONFIG = {
         "White House": {
             "address": "1600 Pennsylvania Ave NW, Washington, DC 20500, USA",
             "weight": 0.15,
+            "mode": "walk",
             "icon": "landmark",
             "color": "blue"
         },
         "Union Station": {
             "address": "50 Massachusetts Ave NE, Washington, DC 20002, USA",
             "weight": 0.15,
+            "mode": "walk",
             "icon": "train",
             "color": "red"
         }
@@ -173,6 +217,7 @@ DEFAULT_CONFIG = {
         "rent_budget_eur": DEFAULT_RENT_BUDGET_EUR,
         "commute_cap_min": DEFAULT_COMMUTE_CAP_MIN,
         "walking_speed_m_per_min": DEFAULT_WALKING_SPEED_M_PER_MIN,
+        "cycling_speed_m_per_min": DEFAULT_CYCLING_SPEED_M_PER_MIN,
         "poi_dedupe_tolerance_m": DEFAULT_POI_DEDUPE_TOLERANCE_M,
         "max_bbox_span_km": DEFAULT_MAX_BBOX_SPAN_KM,
         "saturation": dict(DEFAULT_SATURATION),
@@ -244,6 +289,38 @@ def _as_number(value: Any) -> float | None:
         except ValueError:
             return None
     return None
+
+
+def destination_mode(info: Any) -> str:
+    """The travel mode a destination declares, defaulting to walking.
+
+    `validate_config` rejects anything outside `TRAVEL_MODES` before `run()`
+    reaches this, so the fallback for an unknown value only covers callers that
+    skipped validation - it keeps the map and the routing loop agreeing on one
+    answer rather than raising halfway through a scored run.
+    """
+    if not isinstance(info, dict):
+        return DEFAULT_TRAVEL_MODE
+    mode = info.get("mode", DEFAULT_TRAVEL_MODE)
+    return mode if mode in TRAVEL_MODES else DEFAULT_TRAVEL_MODE
+
+
+def commute_column(dest_name: str, mode: str = DEFAULT_TRAVEL_MODE) -> str:
+    """Name of the table/CSV column carrying a destination's commute minutes.
+
+    The mode is part of the name, so a cycling commute is never reported in a
+    column called `..._walk_min`. An all-walk config keeps exactly the columns it
+    had before cycling existed.
+    """
+    suffix = TRAVEL_MODES.get(mode, TRAVEL_MODES[DEFAULT_TRAVEL_MODE])["column_suffix"]
+    return f"{dest_name.lower().replace(' ', '_')}_{suffix}"
+
+
+# Every suffix `commute_column` can produce, longest first so a shorter suffix
+# can't strip a prefix of a longer one when a label is recovered from a column.
+COMMUTE_COLUMN_SUFFIXES = tuple(
+    sorted((f"_{spec['column_suffix']}" for spec in TRAVEL_MODES.values()), key=len, reverse=True)
+)
 
 
 def _validate_candidate(index: int, candidate: Any, problems: list[str], seen_names: dict[str, int]):
@@ -323,6 +400,11 @@ def validate_config(config: Any) -> list[str]:
                     problems.append(f"{label}: 'weight' must be a number, got {dest_info['weight']!r}")
                 elif weight < 0:
                     problems.append(f"{label}: 'weight' is negative ({weight:g}); weights are relative importances and cannot be below 0")
+            # An unrecognised mode can't be guessed at: silently walking a
+            # destination the user meant to cycle would report a commute two to
+            # three times too long and quietly demote every flat near it.
+            if "mode" in dest_info and dest_info["mode"] not in TRAVEL_MODES:
+                problems.append(f"{label}: 'mode' must be one of {', '.join(sorted(TRAVEL_MODES))}, got {dest_info['mode']!r}")
 
     weights = config.get("weights", {})
     if not isinstance(weights, dict):
@@ -355,7 +437,7 @@ def validate_config(config: Any) -> list[str]:
         # limit; a zero or negative value silently zeroes or inverts the term it
         # governs, or (for max_bbox_span_km) rejects every possible search.
         for key in ("buffer_m", "noise_cap_m", "rent_budget_eur", "commute_cap_min", "max_bbox_span_km",
-                    "walking_speed_m_per_min"):
+                    "walking_speed_m_per_min", "cycling_speed_m_per_min"):
             if key not in params:
                 continue
             number = _as_number(params[key])
@@ -694,20 +776,27 @@ def nearest_node(G: nx.MultiDiGraph, point: tuple[float, float]):
     return ox.distance.nearest_nodes(G, point[1], point[0])
 
 
-def walk_route(G: nx.MultiDiGraph, orig: tuple[float, float], dest: tuple[float, float], walking_speed_m_per_min: float = DEFAULT_WALKING_SPEED_M_PER_MIN, projected_crs: str | None = None,
+def route_time(G: nx.MultiDiGraph, orig: tuple[float, float], dest: tuple[float, float], speed_m_per_min: float = DEFAULT_WALKING_SPEED_M_PER_MIN, projected_crs: str | None = None,
                orig_node=None, dest_node=None) -> tuple[float, list[tuple[float, float]]]:
-    """Calculate walking time in minutes and the shortest-path route (list of lat/lon points) between two coordinates over OSM graph G.
+    """Calculate travel time in minutes and the shortest-path route (list of lat/lon points) between two coordinates over OSM graph G.
+
+    Nothing here is mode-specific: the network to route over and the pace to
+    divide by both arrive as arguments, so the same function serves walking and
+    cycling. It is the caller's job to pass a graph and a speed that agree with
+    each other - a cycling pace over the pedestrian network is not a bike time.
 
     The speed defaults to `DEFAULT_WALKING_SPEED_M_PER_MIN` so the function stays
-    usable standalone, but `run()` always passes the configured
-    `parameters['walking_speed_m_per_min']` - the default is a fallback, not the
-    value the tool actually scores with.
+    usable standalone, but `run()` always passes the pace configured for the
+    destination's mode - the default is a fallback, not the value the tool
+    actually scores with.
 
     `orig_node`/`dest_node` let a caller supply an already-resolved graph node.
     `run()` does, because the endpoints repeat: without it the lookup runs
     2*candidates*destinations times where candidates+destinations would do, and
     on a city-sized graph that lookup is not cheap. Passing them is purely an
-    optimisation - omit them and the same nodes are resolved here.
+    optimisation - omit them and the same nodes are resolved here. They must come
+    from *this* graph: a node id resolved against another mode's network names a
+    different place, which yields a plausible number rather than an error.
     """
     if orig_node is None:
         orig_node = nearest_node(G, orig)
@@ -717,11 +806,11 @@ def walk_route(G: nx.MultiDiGraph, orig: tuple[float, float], dest: tuple[float,
         path = nx.shortest_path(G, orig_node, dest_node, weight="length")
         length_m = nx.path_weight(G, path, weight="length")
         route = [(G.nodes[n]["y"], G.nodes[n]["x"]) for n in path]
-        return length_m / walking_speed_m_per_min, route
+        return length_m / speed_m_per_min, route
     except nx.NetworkXNoPath:
-        print(f"[!] Warning: No walking path found between {orig} and {dest}. Defaulting to straight-line distance.")
+        print(f"[!] Warning: No route found between {orig} and {dest}. Defaulting to straight-line distance.")
         dist_m = straight_line_distance_m(orig, dest, projected_crs)
-        return dist_m / walking_speed_m_per_min, [orig, dest]
+        return dist_m / speed_m_per_min, [orig, dest]
 
 
 class FlatScorer:
@@ -743,7 +832,10 @@ class FlatScorer:
         self.commute_cap_min = self.params.get("commute_cap_min", DEFAULT_COMMUTE_CAP_MIN)
         self.poi_dedupe_tolerance_m = self.params.get("poi_dedupe_tolerance_m", DEFAULT_POI_DEDUPE_TOLERANCE_M)
         self.max_bbox_span_km = self.params.get("max_bbox_span_km", DEFAULT_MAX_BBOX_SPAN_KM)
+        # Named to match TRAVEL_MODES[...]["speed_param"], which is how
+        # `mode_speed()` finds the right one without a lookup table of its own.
         self.walking_speed_m_per_min = self.params.get("walking_speed_m_per_min", DEFAULT_WALKING_SPEED_M_PER_MIN)
+        self.cycling_speed_m_per_min = self.params.get("cycling_speed_m_per_min", DEFAULT_CYCLING_SPEED_M_PER_MIN)
         # Per-metric half-credit points; a config may override any subset.
         self.saturation = dict(DEFAULT_SATURATION, **self.params.get("saturation", {}))
         self.configured_crs = self.params.get("projected_crs", "auto")
@@ -758,6 +850,11 @@ class FlatScorer:
     def _log(self, msg: str):
         if self.verbose:
             print(msg)
+
+    def mode_speed(self, mode: str) -> float:
+        """The configured pace, in m/min, for one travel mode."""
+        spec = TRAVEL_MODES.get(mode, TRAVEL_MODES[DEFAULT_TRAVEL_MODE])
+        return float(getattr(self, spec["speed_param"]))
 
     def resolve_crs(self, lats: list[float], lons: list[float]) -> str:
         """Determine projected CRS (e.g. UTM zone) for metric calculations."""
@@ -995,9 +1092,16 @@ class FlatScorer:
                                     centre_labels=candidate_points)
         self._log(f"[+] Search area spans {span_km:.1f} km (limit {self.max_bbox_span_km:g} km)")
 
-        self._log("\nDownloading street walking network from OpenStreetMap...")
-        def get_graph():
-            return ox.graph_from_bbox(bbox=bbox, network_type="walk")
+        # One street network per travel mode actually used, in the order the
+        # destinations first mention them. Downloading lazily is what keeps an
+        # all-walk config - every config that predates cycling, including the
+        # shipped example - paying for exactly the one download it always paid
+        # for; only a genuinely mixed config pays for a second.
+        dest_modes = {
+            dest_name: destination_mode(data["info"])
+            for dest_name, data in resolved_destinations.items()
+        }
+        modes_in_use = list(dict.fromkeys(dest_modes.values()))
 
         def get_pois():
             tags = {
@@ -1010,7 +1114,18 @@ class FlatScorer:
             }
             return ox.features_from_bbox(bbox=bbox, tags=tags)
 
-        G = query_with_retry(get_graph)
+        graphs = {}
+        for mode in modes_in_use:
+            spec = TRAVEL_MODES[mode]
+            self._log(f"\nDownloading the {spec['label']} street network from OpenStreetMap...")
+            # network_type is bound as a default rather than closed over, so the
+            # lambda can't be caught out by the loop variable moving on.
+            graphs[mode] = query_with_retry(
+                lambda network_type=spec["network_type"]: ox.graph_from_bbox(bbox=bbox, network_type=network_type)
+            )
+        if not modes_in_use:
+            self._log("\nNo destinations to route to, so no street network is needed.")
+
         self._log("Downloading points of interest (POIs) from OpenStreetMap...")
         pois = query_with_retry(get_pois)
 
@@ -1056,15 +1171,24 @@ class FlatScorer:
 
         # Each destination's nearest graph node is the same for every candidate,
         # so resolve it once here instead of once per (candidate, destination).
+        # Keyed by (mode, destination), never by destination alone: a node id is
+        # only meaningful in the graph it came from, and the same id names a
+        # different junction in the cycling network. Reusing one across modes
+        # produces a plausible commute time rather than an error, so nothing
+        # downstream would notice.
         dest_nodes = {
-            dest_name: nearest_node(G, data["coords"])
+            (dest_modes[dest_name], dest_name): nearest_node(graphs[dest_modes[dest_name]], data["coords"])
             for dest_name, data in resolved_destinations.items()
         }
 
-        # Worth stating: it converts every routed distance into the minutes that
-        # commute_cap_min judges, so a reader comparing two runs needs to know it.
-        self._log(f"\nScoring candidates (walking at {self.walking_speed_m_per_min:g} m/min "
-                  f"= {self.walking_speed_m_per_min * 60 / 1000:.1f} km/h)...")
+        # Worth stating: these convert every routed distance into the minutes that
+        # commute_cap_min judges, so a reader comparing two runs needs to know them.
+        paces = ", ".join(
+            f"{TRAVEL_MODES[mode]['label']} at {self.mode_speed(mode):g} m/min "
+            f"= {self.mode_speed(mode) * 60 / 1000:.1f} km/h"
+            for mode in modes_in_use
+        )
+        self._log(f"\nScoring candidates ({paces})..." if paces else "\nScoring candidates...")
         metrics_by_name = {}
         routes_by_candidate = {}
         rows = []
@@ -1072,7 +1196,10 @@ class FlatScorer:
         for name, info in resolved_candidates.items():
             lat, lon = info["coords"]
             rent = info["rent"]
-            orig_node = nearest_node(G, (lat, lon))
+            # Per mode for the same reason the destination cache is: this flat's
+            # nearest walking junction and nearest cycling junction are different
+            # nodes in different graphs.
+            orig_nodes = {mode: nearest_node(graphs[mode], (lat, lon)) for mode in modes_in_use}
 
             green_area_m2, green_points = green_area_and_points(lat, lon, green_p, projected_crs, dist=self.buffer_m)
             dist_to_busy_road = nearest_distance_m(lat, lon, roads_p, projected_crs)
@@ -1082,11 +1209,12 @@ class FlatScorer:
             dest_routes = {}
             for dest_name, dest_data in resolved_destinations.items():
                 dest_coords = dest_data["coords"]
-                dest_times[dest_name], dest_routes[dest_name] = walk_route(
-                    G, (lat, lon), dest_coords,
-                    walking_speed_m_per_min=self.walking_speed_m_per_min,
+                mode = dest_modes[dest_name]
+                dest_times[dest_name], dest_routes[dest_name] = route_time(
+                    graphs[mode], (lat, lon), dest_coords,
+                    speed_m_per_min=self.mode_speed(mode),
                     projected_crs=projected_crs,
-                    orig_node=orig_node, dest_node=dest_nodes[dest_name],
+                    orig_node=orig_nodes[mode], dest_node=dest_nodes[(mode, dest_name)],
                 )
             routes_by_candidate[name] = dest_routes
 
@@ -1118,8 +1246,7 @@ class FlatScorer:
             }
 
             for dest_name, mins in dest_times.items():
-                clean_dest_key = dest_name.lower().replace(" ", "_")
-                row[f"{clean_dest_key}_walk_min"] = round(mins, 1)
+                row[commute_column(dest_name, dest_modes[dest_name])] = round(mins, 1)
 
             row["lat"] = lat
             row["lon"] = lon
@@ -1144,12 +1271,18 @@ class FlatScorer:
         return df
 
     def generate_map(self, df: pd.DataFrame, resolved_destinations: dict[str, Any], html_file: str, routes_by_candidate: dict[str, dict[str, list[tuple[float, float]]]] | None = None):
-        """Generate interactive Folium map with candidate apartments, destination pins, and predicted walking routes."""
+        """Generate interactive Folium map with candidate apartments, destination pins, and predicted commute routes."""
         routes_by_candidate = routes_by_candidate or {}
         first_lat = df.iloc[0]["lat"]
         first_lon = df.iloc[0]["lon"]
         m_map = folium.Map(location=[first_lat, first_lon], zoom_start=13)
-        route_group = folium.FeatureGroup(name="Predicted walking routes", show=self.show_walk_routes)
+
+        dest_modes = {name: destination_mode(data["info"]) for name, data in resolved_destinations.items()}
+        # An all-walk map keeps the layer name it has always had; only a map that
+        # actually mixes modes needs the broader wording.
+        layer_name = ("Predicted walking routes" if set(dest_modes.values()) <= {"walk"}
+                      else "Predicted commute routes")
+        route_group = folium.FeatureGroup(name=layer_name, show=self.show_walk_routes)
 
         # Add destinations to map
         for dest_name, dest_data in resolved_destinations.items():
@@ -1184,9 +1317,12 @@ class FlatScorer:
 
             dest_lines = []
             for col in df.columns:
-                if col.endswith("_walk_min"):
-                    dest_label = col.replace("_walk_min", "").replace("_", " ").title()
-                    dest_lines.append(f"{dest_label}: {row[col]} min")
+                suffix = next((s for s in COMMUTE_COLUMN_SUFFIXES if col.endswith(s)), None)
+                if suffix is None:
+                    continue
+                dest_label = col[:-len(suffix)].replace("_", " ").title()
+                verb = next(spec["verb"] for spec in TRAVEL_MODES.values() if suffix == f"_{spec['column_suffix']}")
+                dest_lines.append(f"{dest_label}: {row[col]} min {verb}")
             dest_html = " | ".join(dest_lines)
 
             popup = (
@@ -1210,14 +1346,18 @@ class FlatScorer:
             for dest_name, route_coords in routes_by_candidate.get(row["name"], {}).items():
                 if not route_coords or len(route_coords) < 2:
                     continue
-                dest_key = dest_name.lower().replace(" ", "_")
-                mins = row.get(f"{dest_key}_walk_min")
+                mode = dest_modes.get(dest_name, DEFAULT_TRAVEL_MODE)
+                mins = row.get(commute_column(dest_name, mode))
                 folium.PolyLine(
                     locations=route_coords,
                     color=color,
                     weight=3,
                     opacity=0.6,
-                    tooltip=f"{row['name']} → {dest_name}: {mins} min",
+                    # Lines are coloured by candidate score, so on a mixed map the
+                    # dashes are the only thing separating a cycled leg from a
+                    # walked one.
+                    dash_array="8" if mode != DEFAULT_TRAVEL_MODE else None,
+                    tooltip=f"{row['name']} → {dest_name}: {mins} min {TRAVEL_MODES[mode]['verb']}",
                 ).add_to(route_group)
 
         route_group.add_to(m_map)
