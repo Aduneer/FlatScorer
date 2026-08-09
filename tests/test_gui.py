@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import os
 
+import pandas as pd
 import pytest
 
 st = pytest.importorskip("streamlit")
@@ -139,6 +140,68 @@ def test_the_walking_speed_widget_reaches_the_built_config():
         params = streamlit_app._build_config()["parameters"]
 
     assert params["walking_speed_m_per_min"] == 100.0
+
+
+def test_the_cycling_speed_widget_reaches_the_built_config():
+    """Same contract as the walking pace: tunable only if the GUI's value scores."""
+    import streamlit_app
+
+    app = fresh_app()
+    app.session_state["main_nav_radio"] = WEIGHTS
+    app.run()
+
+    speed_input = next(w for w in app.number_input if "Cycling speed" in w.label)
+    speed_input.set_value(200.0).run()
+
+    assert not app.exception, app.exception
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(streamlit_app.st, "session_state", app.session_state)
+        params = streamlit_app._build_config()["parameters"]
+
+    assert params["cycling_speed_m_per_min"] == 200.0
+
+
+def test_the_mode_dropdown_can_only_offer_modes_the_engine_accepts():
+    """A dropdown listing a mode validate_config rejects would be a dead end."""
+    import streamlit_app
+    from FlatScorer import TRAVEL_MODES
+
+    assert streamlit_app.MODE_CHOICES == list(TRAVEL_MODES)
+
+
+def test_a_cycling_destination_survives_the_round_trip_into_a_config():
+    import streamlit_app
+    from FlatScorer import validate_config
+
+    app = fresh_app()
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(streamlit_app.st, "session_state", app.session_state)
+        app.session_state.destinations_df = pd.DataFrame([
+            {"name": "Office", "address": "Alexanderplatz 1, Berlin", "weight": 0.2,
+             "mode": "bike", "icon": "briefcase", "color": "blue"},
+        ])
+        config = streamlit_app._build_config()
+
+    assert config["destinations"]["Office"]["mode"] == "bike"
+    assert validate_config(config) == []
+
+
+def test_a_destination_row_with_no_mode_column_still_builds_a_walking_destination():
+    """An uploaded pre-cycling config has no 'mode' at all — it must still run."""
+    import streamlit_app
+    from FlatScorer import validate_config
+
+    app = fresh_app()
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(streamlit_app.st, "session_state", app.session_state)
+        app.session_state.destinations_df = pd.DataFrame([
+            {"name": "Office", "address": "Alexanderplatz 1, Berlin", "weight": 0.2},
+        ])
+        config = streamlit_app._build_config()
+
+    assert config["destinations"]["Office"]["mode"] == "walk"
+    assert validate_config(config) == []
 
 
 def test_editing_a_saturation_widget_does_not_mutate_the_module_default():
