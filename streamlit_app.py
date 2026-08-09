@@ -565,18 +565,11 @@ with st.sidebar:
         key="main_nav_radio",
     )
 
-    n_cand = len(st.session_state.candidates_df)
-    n_dest = len(st.session_state.destinations_df)
-
-    st.markdown(
-        f"""
-        <div class="fs-stat-pill">
-            <div><strong>Candidates:</strong> {n_cand} loaded</div>
-            <div><strong>Destinations:</strong> {n_dest} loaded</div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
+    # Reserved, not rendered: both this pill and the download button below read
+    # state that the `data_editor`s only assign further down this same script
+    # run. They are filled at the bottom of the file instead. Claiming the slots
+    # here is what keeps the sidebar's visual order unchanged.
+    stat_pill_slot = st.empty()
 
     st.markdown("---")
 
@@ -594,13 +587,7 @@ with st.sidebar:
             st.rerun()
 
         st.markdown("<div style='height: 8px;'></div>", unsafe_allow_html=True)
-        st.download_button(
-            "Download config.json",
-            data=json.dumps(_build_config(), indent=2, ensure_ascii=False),
-            file_name="config.json",
-            mime="application/json",
-            width="stretch",
-        )
+        config_download_slot = st.empty()
 
     # The "this takes a few minutes" half of this note used to live here and was
     # routinely missed down in the corner. It now sits beside the Run button,
@@ -1091,3 +1078,33 @@ elif selected_nav.startswith("🚀"):
 
             with st.expander("📋 Detailed Geocoding & Sensitivity Log"):
                 st.text(result["log"])
+
+
+# ------------------------------------------------- Deferred sidebar renders --
+
+# These two fill the slots claimed in the sidebar above, and they have to run
+# here, after every page branch. `st.data_editor` assigns its edited frame into
+# session_state as the page body runs, so anything rendered earlier reports the
+# *previous* rerun's data: the count lagged an edit behind, and the exported
+# config could be missing the edit that had just been made — paste a value, hit
+# Download, get a file without it. Streamlit hands `download_button` its payload
+# at render time, so building the config late is the whole fix. Both are pinned
+# by tests; keep them last.
+
+stat_pill_slot.markdown(
+    f"""
+    <div class="fs-stat-pill">
+        <div><strong>Candidates:</strong> {len(st.session_state.candidates_df)} loaded</div>
+        <div><strong>Destinations:</strong> {len(st.session_state.destinations_df)} loaded</div>
+    </div>
+    """,
+    unsafe_allow_html=True,
+)
+
+config_download_slot.download_button(
+    "Download config.json",
+    data=json.dumps(_build_config(), indent=2, ensure_ascii=False),
+    file_name="config.json",
+    mime="application/json",
+    width="stretch",
+)

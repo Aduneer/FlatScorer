@@ -107,6 +107,53 @@ def test_edited_rent_reaches_the_config_handed_to_the_scorer():
     assert config["candidates"][0]["rent"] == 999
 
 
+def _stat_pill(app: AppTest) -> str:
+    return next(m.value for m in app.sidebar.markdown if "fs-stat-pill" in m.value)
+
+
+def test_the_sidebar_config_download_reflects_the_edit_that_triggered_the_rerun():
+    """The exported config must not be one edit behind.
+
+    `st.download_button` hands Streamlit its payload at render time, and that
+    payload is content-addressed — the URL changes if and only if the bytes do,
+    which is the only handle AppTest gives us on it. The sidebar block runs
+    before the candidates `data_editor` assigns its edited frame into
+    session_state, so it used to export the *previous* state: make an edit, hit
+    Download, get a file without it.
+    """
+    app = fresh_app()
+    before = app.download_button[0].proto.url
+
+    edit_cell(app, 0, "rent", 999)
+    app.run()
+
+    assert not app.exception, app.exception
+    assert app.session_state.candidates_df.loc[0, "rent"] == 999, "the edit itself did not land"
+    assert app.download_button[0].proto.url != before, (
+        "the download payload is byte-identical after an edit — the sidebar is a rerun behind"
+    )
+
+
+def test_the_sidebar_count_reflects_a_row_added_in_the_same_rerun():
+    """Same root cause as the download button, but visible on screen.
+
+    Adding a row reruns the script, and the sidebar counted `candidates_df`
+    before the editor had applied the addition — so the pill kept showing the
+    old number, and nothing triggers a further rerun to correct it.
+    """
+    app = fresh_app()
+    app.session_state["candidates_editor"] = {
+        "edited_rows": {},
+        "added_rows": [{"name": "Flat D", "address": "Karl-Marx-Allee 1, Berlin", "rent": 900}],
+        "deleted_rows": [],
+    }
+    app.run()
+
+    assert not app.exception, app.exception
+    assert len(app.session_state.candidates_df) == 4, "the added row itself did not land"
+    assert "<strong>Candidates:</strong> 4 loaded" in _stat_pill(app)
+
+
 def test_weights_page_carries_the_normalization_anchors_into_the_config():
     app = fresh_app()
     app.session_state["main_nav_radio"] = WEIGHTS
