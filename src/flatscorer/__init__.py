@@ -38,6 +38,7 @@ _EXPORTS = {
     "validate_config": "config",
     "destination_mode": "config",
     "candidate_url": "config",
+    "candidate_image": "config",
     "_as_number": "config",
     # geocode
     "geocode_safe": "geocode",
@@ -92,6 +93,8 @@ _EXPORTS = {
     # mapping
     "generate_map": "mapping",
     "_listing_link_html": "mapping",
+    # report
+    "generate_report": "report",
     # scorer / cli
     "FlatScorer": "scorer",
     "PROGRESS_WEIGHTS": "scorer",

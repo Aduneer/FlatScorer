@@ -114,6 +114,9 @@ network..."), so a slow run reads as slow rather than as a hang.
   <img src="assets/gui_preview.png" alt="FlatScorer Streamlit GUI" width="800"/>
 </p>
 
+<sub>The flat photos in the demo config and in the screenshots are by Carol M.
+Highsmith, from the Library of Congress, and are in the public domain.</sub>
+
 ## How It Works
 
 For each candidate apartment, FlatScorer:
@@ -252,6 +255,7 @@ instead of being rebuilt per working directory.
 | Terminal table | Ranked summary printed to stdout |
 | `output/apartment_scores.csv` | Full metrics for every candidate |
 | `output/apartment_map.html` | Interactive Folium map with color-coded pins and predicted commute routes |
+| `output/apartment_overview.html` | One card per flat showing what each criterion contributed to its score — self-contained, opens offline, sendable |
 | Sensitivity report | ±20% weight perturbation check on ranking stability |
 
 ## Configuration
@@ -270,7 +274,17 @@ Everything is driven by a single JSON file. Generate a template with
       // Optional. Never scored — carried into the CSV and the map popup so you
       // can click from a result straight back to the listing. Omit it entirely
       // if you have no link; must be http:// or https:// if you do.
-      "url": "https://www.example-listings.de/expose/12345"
+      "url": "https://www.example-listings.de/expose/12345",
+      // Optional. Never scored — shown on this flat's card in the overview
+      // report, which falls back to a score dial when there is no photo.
+      // Either an image URL or a path to a file on this computer; a local file
+      // is embedded into the report so it stays one sendable file, as long as
+      // it is under 2 MB and is a .jpg/.jpeg/.png/.gif/.webp. Anything that
+      // can't be read is logged and falls back to the dial.
+      // Photos you point this at stay yours to account for: listing photos are
+      // usually the agency's copyright, and embedding one copies it into the
+      // report — so treat a report containing them as a private document.
+      "image": "https://commons.wikimedia.org/wiki/Special:FilePath/Row_houses%2C_16th_near_Q_St.%2C_NW%2C_Washington%2C_D.C_LCCN2010641449.tif?width=1000"
     }
   ],
 
@@ -316,7 +330,8 @@ Everything is driven by a single JSON file. Generate a template with
 
   "output": {
     "csv_file": "output/apartment_scores.csv",
-    "html_file": "output/apartment_map.html"
+    "html_file": "output/apartment_map.html",
+    "overview_file": "output/apartment_overview.html"
   }
 }
 ```

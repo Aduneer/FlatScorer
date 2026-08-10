@@ -38,7 +38,12 @@ DEFAULT_CONFIG = {
         {
             "name": "Flat A - Dupont Circle",
             "address": "1500 Connecticut Ave NW, Washington, DC 20036, USA",
-            "rent": 1800
+            "rent": 1800,
+            # Carol M. Highsmith, Library of Congress - public domain, so the
+            # demo can ship it and a screenshot of the report can be published.
+            # Flat B deliberately has none, so the demo shows both a photo panel
+            # and the score dial that replaces it.
+            "image": "https://commons.wikimedia.org/wiki/Special:FilePath/Row_houses%2C_16th_near_Q_St.%2C_NW%2C_Washington%2C_D.C_LCCN2010641449.tif?width=1000"
         },
         {
             "name": "Flat B - Foggy Bottom",
@@ -48,7 +53,8 @@ DEFAULT_CONFIG = {
         {
             "name": "Flat C - Logan Circle",
             "address": "1400 14th St NW, Washington, DC 20005, USA",
-            "rent": 1950
+            "rent": 1950,
+            "image": "https://commons.wikimedia.org/wiki/Special:FilePath/Row_houses_along_the_1500_block_of_Corcoran_St.%2C_NW%2C_Washington%2C_D.C_LCCN2010641272.tif?width=1000"
         }
     ],
     "destinations": {
@@ -87,7 +93,8 @@ DEFAULT_CONFIG = {
     # so there is still only one place that decides.
     "output": {
         "csv_file": paths.output_path("apartment_scores.csv"),
-        "html_file": paths.output_path("apartment_map.html")
+        "html_file": paths.output_path("apartment_map.html"),
+        "overview_file": paths.output_path("apartment_overview.html")
     }
 }
 
@@ -158,6 +165,24 @@ def candidate_url(candidate: Any) -> str | None:
     return url if url.lower().startswith(("http://", "https://")) else None
 
 
+def candidate_image(candidate: Any) -> str | None:
+    """The photo a candidate carries: an http(s) URL, or a path to a local file.
+
+    Blank counts as absent, exactly as `candidate_url` treats it.
+
+    Deliberately unlike `candidate_url`, no scheme check happens here - a bare
+    filesystem path is a legitimate value. Whether it can actually be read is
+    decided at render time in `report.py`, where every failure is soft and the
+    card falls back to the score dial. Never scored; purely carried.
+    """
+    if not isinstance(candidate, dict):
+        return None
+    image = candidate.get("image")
+    if not isinstance(image, str):
+        return None
+    return image.strip() or None
+
+
 def _validate_candidate(index: int, candidate: Any, problems: list[str], seen_names: dict[str, int]):
     """Check one candidate entry, appending any problems found."""
     label = f"candidates[{index}]"
@@ -193,6 +218,16 @@ def _validate_candidate(index: int, candidate: Any, problems: list[str], seen_na
         elif not url.strip().lower().startswith(("http://", "https://")):
             problems.append(f"{label}: 'url' must start with http:// or https://, got {url!r} - "
                             "it is rendered as a clickable link on the map")
+
+    # Only the type is checked, never the filesystem. A config gets passed
+    # between machines, so an image path valid where it was written and absent
+    # where it is read is normal, not an error - and unlike everything else
+    # here, a bad image cannot waste a multi-minute run. `report.py` falls back
+    # to the score dial and logs why.
+    image = candidate.get("image")
+    if image is not None and not isinstance(image, str):
+        problems.append(f"{label}: 'image' must be a string holding a photo URL or a "
+                        f"local file path, got {type(image).__name__}")
 
     if "rent" not in candidate:
         problems.append(f"{label}: 'rent' is missing - a flat with no rent would score as if it were free, "

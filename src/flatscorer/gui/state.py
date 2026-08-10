@@ -19,7 +19,7 @@ from flatscorer.routing import DEFAULT_TRAVEL_MODE, TRAVEL_MODES
 # `st.data_editor` only offers the columns its frame actually has, so every
 # candidate frame is reindexed onto this - otherwise a config written before
 # `url` existed would silently stop offering the field.
-CANDIDATE_COLUMNS = ("name", "address", "rent", "url")
+CANDIDATE_COLUMNS = ("name", "address", "rent", "url", "image")
 
 # Renders the domain rather than the raw link, so a 140-character listing URL
 # shows as `immobilienscout24.de` and the table stays readable.
@@ -31,16 +31,18 @@ DEFAULT_PARAMS = DEFAULT_CONFIG["parameters"]
 def _candidate_frame(candidates: list[dict[str, Any]]) -> pd.DataFrame:
     """Candidates as a frame carrying exactly `CANDIDATE_COLUMNS`.
 
-    Reindexed rather than trusted: `url` is optional and omitted when unset, so
-    an incoming config can legitimately have no `url` key on any candidate — and
-    the editor would then not show the column at all.
+    Reindexed rather than trusted: `url` and `image` are optional and omitted
+    when unset, so an incoming config can legitimately have neither key on any
+    candidate — and the editor would then not show the column at all.
 
-    The blanks have to be empty strings, not NaN. Reindexing in a column nothing
-    supplies gives it float64 dtype, and `LinkColumn` refuses to edit a float
-    column — the whole page dies with a StreamlitAPIException, not just the cell.
+    The blanks have to be empty strings, not NaN, for every optional column.
+    Reindexing in a column nothing supplies gives it float64 dtype, and the
+    editor refuses to edit a float column as text — the whole page dies with a
+    StreamlitAPIException, not just the cell.
     """
     frame = pd.DataFrame(candidates).reindex(columns=list(CANDIDATE_COLUMNS))
-    frame["url"] = frame["url"].fillna("").astype(str)
+    for optional in ("url", "image"):
+        frame[optional] = frame[optional].fillna("").astype(str)
     return frame
 
 
@@ -142,6 +144,13 @@ def _build_config() -> dict[str, Any]:
         url = "" if pd.isna(url) else str(url).strip()
         if url:
             candidate["url"] = url
+        # Same NaN trap as url and rent: a cleared cell is truthy, so `or ""`
+        # would write the string "nan" in as a photo path. Omitted when blank,
+        # so a config with no photos round-trips exactly as it did before.
+        image = row.get("image")
+        image = "" if pd.isna(image) else str(image).strip()
+        if image:
+            candidate["image"] = image
         candidates.append(candidate)
 
     destinations = {}
@@ -170,5 +179,6 @@ def _build_config() -> dict[str, Any]:
         "output": {
             "csv_file": paths.output_path("apartment_scores.csv"),
             "html_file": paths.output_path("apartment_map.html"),
+            "overview_file": paths.output_path("apartment_overview.html"),
         },
     }

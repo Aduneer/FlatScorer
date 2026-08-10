@@ -40,6 +40,16 @@ def render():
                      "the score — it rides along into the CSV and onto the map popup so you "
                      "can click straight through from a result.",
             ),
+            # TextColumn, not LinkColumn: the value is legitimately a bare
+            # filesystem path, and LinkColumn's validation would reject it.
+            "image": st.column_config.TextColumn(
+                "Photo",
+                width="medium",
+                help="Optional photo for the overview report: either an image URL "
+                     "(right-click the listing's photo → Copy image address) or a path "
+                     "to a file on this computer. It never affects the score — without "
+                     "one, the card shows a score dial instead.",
+            ),
         },
         key="candidates_editor",
     ).reset_index(drop=True)

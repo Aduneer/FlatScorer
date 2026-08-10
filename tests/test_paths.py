@@ -81,3 +81,7 @@ def test_a_resource_path_stays_inside_the_package():
     banner = paths.resource_path("gui", "assets", "banner.svg")
     assert os.path.isfile(banner)
     assert banner.startswith(os.path.dirname(os.path.abspath(paths.__file__)))
+
+
+def test_default_config_points_the_overview_report_at_the_output_directory():
+    assert DEFAULT_CONFIG["output"]["overview_file"] == paths.output_path("apartment_overview.html")

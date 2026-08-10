@@ -4,7 +4,8 @@
       "name": "Flat A - Dupont Circle",
       "address": "1500 Connecticut Ave NW, Washington, DC 20036, USA",
       "rent": 1800,
-      "url": "https://www.example-listings.com/expose/12345"
+      "url": "https://www.example-listings.com/expose/12345",
+      "image": "https://commons.wikimedia.org/wiki/Special:FilePath/Row_houses%2C_16th_near_Q_St.%2C_NW%2C_Washington%2C_D.C_LCCN2010641449.tif?width=1000"
     },
     {
       "name": "Flat B - Foggy Bottom",
@@ -65,6 +66,7 @@
   },
   "output": {
     "csv_file": "output/apartment_scores.csv",
-    "html_file": "output/apartment_map.html"
+    "html_file": "output/apartment_map.html",
+    "overview_file": "output/apartment_overview.html"
   }
 }

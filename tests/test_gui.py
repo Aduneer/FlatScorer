@@ -348,6 +348,75 @@ def test_a_cleared_listing_url_is_omitted_rather_than_exported_as_nan():
     assert "url" not in build_config_from(app)["candidates"][0]
 
 
+def test_the_candidates_frame_always_offers_an_image_column():
+    """The editor only shows columns the frame has, so a config predating the
+    field would silently stop offering it."""
+    app = fresh_app()
+    assert "image" in app.session_state.candidates_df.columns
+
+
+def test_a_config_with_no_images_leaves_the_image_column_editable():
+    """Reindexing in a column nothing supplies gives it float64 dtype, and the
+    editor refuses to edit a float as text - the exact shape that took the whole
+    page down for `url`. The demo config carries photos, so this has to load a
+    config without them rather than rely on the default."""
+    from flatscorer.gui import state as gui_state
+
+    app = fresh_app()
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(gui_state.st, "session_state", app.session_state)
+        gui_state._load_config_into_state({
+            "candidates": [{"name": "Flat A", "address": "1 Main St", "rent": 1800}],
+            "destinations": {},
+        })
+
+    assert not app.exception, app.exception
+    assert app.session_state.candidates_df["image"].dtype == object
+
+
+def test_a_photo_typed_into_the_editor_reaches_the_built_config():
+    from flatscorer.config import validate_config
+
+    app = fresh_app()
+    edit_cell(app, 0, "image", "https://example.com/photo.jpg")
+    app.run()
+
+    assert not app.exception, app.exception
+    config = build_config_from(app)
+    assert config["candidates"][0]["image"] == "https://example.com/photo.jpg"
+    assert validate_config(config) == []
+
+
+def test_a_candidate_with_no_photo_carries_no_image_key_at_all():
+    """A flat with no photo must round-trip exactly as it did before the field.
+
+    The demo config gives Flat A and Flat C a photo and deliberately leaves Flat
+    B without one, so the built config has to show both shapes.
+    """
+    candidates = build_config_from(fresh_app())["candidates"]
+
+    assert [c["name"] for c in candidates if "image" in c] == [
+        "Flat A - Dupont Circle", "Flat C - Logan Circle",
+    ]
+    assert "image" not in candidates[1]
+
+
+def test_a_cleared_photo_cell_is_omitted_rather_than_exported_as_nan():
+    app = fresh_app()
+    edit_cell(app, 0, "image", "https://example.com/photo.jpg")
+    app.run()
+    edit_cell(app, 0, "image", None)
+    app.run()
+
+    assert not app.exception, app.exception
+    assert "image" not in build_config_from(app)["candidates"][0]
+
+
+def test_build_config_carries_the_overview_output_path():
+    app = fresh_app()
+    assert build_config_from(app)["output"]["overview_file"].endswith("apartment_overview.html")
+
+
 def test_a_candidate_with_no_rent_blocks_the_run_button():
     from flatscorer.config import validate_config
 
@@ -392,8 +461,8 @@ REPORTED: list[tuple[float, str]] = []
 class FakeScorer:
     """Stands in for the engine so the Run page can be driven without a network.
 
-    It reports progress the way `run()` does and writes the two output files the
-    page reads back, which is everything the GUI actually depends on.
+    It reports progress the way `run()` does and writes the three output files
+    the page reads back, which is everything the GUI actually depends on.
     """
 
     # Monkeypatched by the listing-link tests; None means the engine produced no
@@ -422,6 +491,8 @@ class FakeScorer:
         df.to_csv(self.config["output"]["csv_file"], index=False)
         with open(self.config["output"]["html_file"], "w", encoding="utf-8") as f:
             f.write("<html>map</html>")
+        with open(self.config["output"]["overview_file"], "w", encoding="utf-8") as f:
+            f.write("<!doctype html><html><body>Apartment overview</body></html>")
         return df
 
 
@@ -536,3 +607,34 @@ def test_the_run_page_states_how_long_a_run_takes(monkeypatch):
     assert not app.exception, app.exception
     captions = [c.value for c in app.caption]
     assert any("minute" in c for c in captions), captions
+
+
+def test_the_run_page_reads_the_overview_report_back(monkeypatch):
+    app = _run_page_after_a_run(monkeypatch)
+    assert "Apartment overview" in app.session_state.last_result["overview_html"]
+
+
+def test_the_deck_caption_explains_how_to_read_a_bar(monkeypatch):
+    """The bars are the reason the page exists and they are not self-explanatory."""
+    app = _run_page_after_a_run(monkeypatch)
+    assert any("could contribute" in c.value for c in app.caption)
+
+
+def test_the_ranked_table_moves_into_an_expander(monkeypatch):
+    app = _run_page_after_a_run(monkeypatch)
+    assert any("Exact numbers" in ex.label for ex in app.get("expander"))
+
+
+def test_the_overview_report_can_be_downloaded(monkeypatch):
+    app = _run_page_after_a_run(monkeypatch)
+    # The sidebar's config.json export is always mounted too, so the results
+    # area is everything but that one.
+    labels = [b.label for b in app.get("download_button") if "config.json" not in b.label]
+    assert len(labels) == 3
+    assert any("Overview" in label for label in labels)
+
+
+def test_the_theme_hides_the_deploy_button():
+    from flatscorer.gui import theme
+
+    assert "stAppDeployButton" in theme.CSS

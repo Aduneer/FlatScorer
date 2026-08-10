@@ -73,6 +73,7 @@ def render():
         work_dir = tempfile.mkdtemp(prefix="flatscorer_")
         config["output"]["csv_file"] = os.path.join(work_dir, "apartment_scores.csv")
         config["output"]["html_file"] = os.path.join(work_dir, "apartment_map.html")
+        config["output"]["overview_file"] = os.path.join(work_dir, "apartment_overview.html")
 
         log_capture = io.StringIO()
         # A determinate bar rather than a spinner: the engine reports each step
@@ -90,12 +91,15 @@ def render():
                     df = scorer.run()
                 with open(config["output"]["html_file"], encoding="utf-8") as f:
                     map_html = f.read()
+                with open(config["output"]["overview_file"], encoding="utf-8") as f:
+                    overview_html = f.read()
                 with open(config["output"]["csv_file"], "rb") as f:
                     csv_bytes = f.read()
                 st.session_state.last_result = {
                     "df": df,
                     "log": log_capture.getvalue(),
                     "map_html": map_html,
+                    "overview_html": overview_html,
                     "csv_bytes": csv_bytes,
                     "failed_candidates": scorer.failed_candidates,
                     "failed_destinations": scorer.failed_destinations,
@@ -198,20 +202,20 @@ def render():
                     unsafe_allow_html=True,
                 )
 
-            st.markdown("### 📊 Ranked Comparison")
-            st.dataframe(
-                df.drop(columns=["lat", "lon"], errors="ignore").reset_index(drop=True),
-                width="stretch",
-                # Ignored when the run produced no links, so a config without
-                # them shows exactly the table it always did.
-                column_config={
-                    "url": st.column_config.LinkColumn(
-                        "Listing", display_text=LISTING_URL_DISPLAY,
-                    ),
-                },
+            st.markdown("### \U0001F3E0 The Flats, Compared")
+            st.caption(
+                "Each bar is as wide as the points that criterion could contribute, and the "
+                "filled part is what this flat earned — so a short full bar and a long "
+                "empty one mean different things."
             )
+            # The deck takes the position the table used to hold: it is now the
+            # primary results surface, and burying it under 620px of map would
+            # mean scrolling past the map to reach the answer.
+            # Sized from the row count rather than fixed, so a three-flat run
+            # doesn't leave hundreds of pixels of blank iframe.
+            st.iframe(result["overview_html"], height=260 + 210 * len(df))
 
-            c1, c2 = st.columns(2)
+            c1, c2, c3 = st.columns(3)
             with c1:
                 st.download_button(
                     "📥 Download Scores (CSV)",
@@ -228,10 +232,31 @@ def render():
                     mime="text/html",
                     width="stretch",
                 )
+            with c3:
+                st.download_button(
+                    "\U0001F4C4 Download Overview (HTML)",
+                    data=result["overview_html"],
+                    file_name="apartment_overview.html",
+                    mime="text/html",
+                    width="stretch",
+                )
 
             st.markdown("---")
             st.markdown("### 🗺️ Interactive GIS Map")
             st.iframe(result["map_html"], height=620)
+
+            with st.expander("\U0001F4CA Exact numbers"):
+                st.dataframe(
+                    df.drop(columns=["lat", "lon"], errors="ignore").reset_index(drop=True),
+                    width="stretch",
+                    # Ignored when the run produced no links, so a config without
+                    # them shows exactly the table it always did.
+                    column_config={
+                        "url": st.column_config.LinkColumn(
+                            "Listing", display_text=LISTING_URL_DISPLAY,
+                        ),
+                    },
+                )
 
             with st.expander("📋 Detailed Geocoding & Sensitivity Log"):
                 st.text(result["log"])

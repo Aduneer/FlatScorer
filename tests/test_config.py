@@ -140,6 +140,39 @@ def test_candidate_url_strips_surrounding_whitespace():
     assert fs.candidate_url(candidate) == "https://example.com/flat"
 
 
+def test_a_candidate_with_an_image_url_is_valid():
+    candidate = {"name": "Flat A", "address": "1 Main St", "rent": 1800,
+                 "image": "https://example.com/photo.jpg"}
+    assert fs.validate_config(valid_config(candidates=[candidate])) == []
+    assert fs.candidate_image(candidate) == "https://example.com/photo.jpg"
+
+
+def test_an_image_path_that_does_not_exist_is_not_a_config_error():
+    """A config is meant to be shared, so it will routinely carry image paths
+    valid on the machine that wrote it and absent on the one reading it. The
+    report falls back to the dial - that must not block a multi-minute run."""
+    candidate = {"name": "Flat A", "address": "1 Main St", "rent": 1800,
+                 "image": "/no/such/directory/photo.png"}
+    assert fs.validate_config(valid_config(candidates=[candidate])) == []
+    assert fs.candidate_image(candidate) == "/no/such/directory/photo.png"
+
+
+def test_a_blank_image_means_no_photo_rather_than_an_error():
+    candidate = {"name": "Flat A", "address": "1 Main St", "rent": 1800, "image": "   "}
+    assert fs.validate_config(valid_config(candidates=[candidate])) == []
+    assert fs.candidate_image(candidate) is None
+
+
+@pytest.mark.parametrize("image", [123, ["a.png"], {"src": "a.png"}, True])
+def test_a_non_string_image_is_rejected(image):
+    candidate = {"name": "Flat A", "address": "1 Main St", "rent": 1800, "image": image}
+    assert "'image'" in only_problem(valid_config(candidates=[candidate]))
+
+
+def test_candidate_image_reports_none_when_the_key_is_absent():
+    assert fs.candidate_image({"name": "Flat A", "address": "1 Main St", "rent": 1800}) is None
+
+
 # -- 5.1: report every problem at once, naming its owner --
 
 def test_every_problem_is_reported_in_one_pass():

@@ -17,10 +17,11 @@ import geopandas as gpd
 import osmnx as ox
 import pandas as pd
 
-from . import geocode, mapping, osm, paths, scoring, spatial
+from . import geocode, mapping, osm, paths, report, scoring, spatial
 from .config import (
     ConfigError,
     _as_number,
+    candidate_image,
     candidate_url,
     destination_mode,
     validate_config,
@@ -63,7 +64,7 @@ PROGRESS_WEIGHTS = {
     "graph": 25.0,    # per travel mode; the single slowest thing here
     "pois": 20.0,
     "score": 2.0,     # per candidate
-    "output": 1.0,    # CSV, sensitivity report and map together
+    "output": 1.0,    # CSV, sensitivity report, map and overview report together
 }
 
 
@@ -198,11 +199,10 @@ class FlatScorer:
         return scoring.compute_score(m, weights, self.anchors)
 
 
-    def log_score_breakdown(self, metrics_by_name: dict[str, dict[str, Any]]):
+    def log_score_breakdown(self, breakdowns: dict[str, dict[str, dict[str, float]]]):
         """Print each term's influence share and what it contributed to every candidate."""
-        if not metrics_by_name:
+        if not breakdowns:
             return
-        breakdowns = {n: self.score_breakdown(m, self.weights) for n, m in metrics_by_name.items()}
         first = next(iter(breakdowns.values()))
         table = pd.DataFrame(
             {"share": {k: f"{v['share'] * 100:.1f}%" for k, v in first.items()}}
@@ -524,14 +524,17 @@ class FlatScorer:
             row["lon"] = lon
             rows.append(row)
 
-        self._progress_step("Ranking, checking weight sensitivity and building the map...",
+        self._progress_step("Ranking, checking weight sensitivity and building the map and report...",
                             PROGRESS_WEIGHTS["output"])
 
         df = pd.DataFrame(rows).sort_values("score", ascending=False)
         self._log(f"\nScores are on a fixed 0-{SCORE_SCALE_MAX:.0f} scale and are comparable across runs.")
         self._log(df.drop(columns=["lat", "lon"]).to_string(index=False))
 
-        self.log_score_breakdown(metrics_by_name)
+        # Computed once and used twice: the log table and the overview report are
+        # two renderings of the same numbers and must not be able to disagree.
+        breakdowns = {n: self.score_breakdown(m, self.weights) for n, m in metrics_by_name.items()}
+        self.log_score_breakdown(breakdowns)
 
         csv_file = paths.ensure_parent(self.output_config.get("csv_file", paths.output_path("apartment_scores.csv")))
         df.to_csv(csv_file, index=False)
@@ -543,6 +546,18 @@ class FlatScorer:
         html_file = paths.ensure_parent(self.output_config.get("html_file", paths.output_path("apartment_map.html")))
         self.generate_map(df, resolved_destinations, html_file, routes_by_candidate)
 
+        # `image` never enters the frame: a local path is meaningless in a CSV
+        # sent to someone else, and the map popup has no use for it.
+        images = {}
+        for candidate in self.candidates_raw:
+            image = candidate_image(candidate)
+            if image:
+                images[candidate["name"]] = image
+
+        overview_file = paths.ensure_parent(
+            self.output_config.get("overview_file", paths.output_path("apartment_overview.html")))
+        self.generate_report(df, breakdowns, resolved_destinations, overview_file, images)
+
         self._progress_finish()
         return df
 
@@ -550,3 +565,11 @@ class FlatScorer:
         """Generate interactive Folium map with candidate apartments, destination pins, and predicted commute routes."""
         mapping.generate_map(df, resolved_destinations, html_file, routes_by_candidate,
                              show_routes=self.show_walk_routes, log=self._log)
+
+    def generate_report(self, df: pd.DataFrame,
+                        breakdowns: dict[str, dict[str, dict[str, float]]],
+                        resolved_destinations: dict[str, Any], html_file: str,
+                        images: dict[str, str]):
+        """Write the overview report: one card per flat, with its score breakdown."""
+        report.generate_report(df, breakdowns, resolved_destinations, html_file, images,
+                               failed_candidates=self.failed_candidates, log=self._log)

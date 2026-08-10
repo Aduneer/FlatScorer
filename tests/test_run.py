@@ -255,12 +255,14 @@ def test_the_results_default_into_an_output_directory_under_the_cwd(offline_run,
 def test_an_explicit_output_path_still_wins(offline_run, monkeypatch, tmp_path):
     monkeypatch.chdir(tmp_path)
     config = one_destination_config()
-    config["output"] = {"csv_file": "mine.csv", "html_file": "mine.html"}
+    config["output"] = {"csv_file": "mine.csv", "html_file": "mine.html",
+                        "overview_file": "mine-overview.html"}
 
     offline_run(config, override_output=False)
 
     assert (tmp_path / "mine.csv").is_file()
     assert (tmp_path / "mine.html").is_file()
+    assert (tmp_path / "mine-overview.html").is_file()
     assert not (tmp_path / "output").exists()
 
 
@@ -271,9 +273,49 @@ def test_an_explicit_path_into_a_missing_directory_is_created(offline_run, monke
     config["output"] = {
         "csv_file": str(tmp_path / "nowhere" / "scores.csv"),
         "html_file": str(tmp_path / "nowhere" / "map.html"),
+        "overview_file": str(tmp_path / "nowhere" / "overview.html"),
     }
 
     offline_run(config, override_output=False)
 
     assert (tmp_path / "nowhere" / "scores.csv").is_file()
     assert (tmp_path / "nowhere" / "map.html").is_file()
+    assert (tmp_path / "nowhere" / "overview.html").is_file()
+
+
+def test_run_writes_the_overview_report(offline_run, tmp_path):
+    offline_run(one_destination_config())
+    page = (tmp_path / "overview.html").read_text(encoding="utf-8")
+    assert "Apartment overview" in page
+    assert "Flat A" in page
+
+
+def test_the_overview_reports_the_same_score_the_ranking_does(offline_run, tmp_path):
+    """The deck and the table are one run's output, so they cannot disagree."""
+    df = offline_run(one_destination_config())
+    page = (tmp_path / "overview.html").read_text(encoding="utf-8")
+    assert f'{float(df.iloc[0]["score"]):.2f}' in page
+
+
+def test_a_candidate_image_reaches_the_overview_without_entering_the_csv(offline_run, tmp_path):
+    config = one_destination_config()
+    config["candidates"][0]["image"] = "https://example.com/flat-a.jpg"
+    offline_run(config)
+    page = (tmp_path / "overview.html").read_text(encoding="utf-8")
+    assert "https://example.com/flat-a.jpg" in page
+    csv_text = (tmp_path / "scores.csv").read_text(encoding="utf-8")
+    assert "image" not in csv_text.splitlines()[0]
+
+
+def test_an_explicit_overview_path_still_wins(offline_run, tmp_path):
+    config = one_destination_config()
+    target = tmp_path / "elsewhere" / "custom.html"
+    config["output"] = {
+        "csv_file": str(tmp_path / "scores.csv"),
+        "html_file": str(tmp_path / "map.html"),
+        "overview_file": str(target),
+    }
+
+    offline_run(config, override_output=False)
+
+    assert target.is_file()

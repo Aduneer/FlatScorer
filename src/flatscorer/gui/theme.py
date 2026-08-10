@@ -111,6 +111,15 @@ html, body {
     fill: currentColor !important;
 }
 
+/* Streamlit's "Deploy" button. This ships as a local desktop tool, so an
+   invitation to deploy it to Community Cloud is noise. Hidden in CSS rather
+   than with `toolbarMode` in .streamlit/config.toml because a data file can go
+   missing from a PyInstaller bundle while a module cannot (same reason this
+   theme is a Python string), and because a CSS rule covers `streamlit run
+   src/flatscorer/gui/app.py` as well as the `flatscorer-gui` entry point.
+   It keys off a Streamlit-internal class name - see TODO.md for the fallback. */
+.stAppDeployButton { display: none !important; }
+
 /* Sidebar Styling */
 [data-testid="stSidebar"] {
     background-color: var(--sidebar);

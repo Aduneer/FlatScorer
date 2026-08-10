@@ -122,6 +122,9 @@ def offline_run(monkeypatch, tmp_path):
             config["output"] = {
                 "csv_file": str(tmp_path / "scores.csv"),
                 "html_file": str(tmp_path / "map.html"),
+                # Third artifact, third redirect - without it every test run
+                # drops output/apartment_overview.html into the checkout.
+                "overview_file": str(tmp_path / "overview.html"),
             }
         # run() downloads one graph per travel mode present in `destinations`, in
         # first-mentioned order, and then the POIs - so the queue has to match.
@@ -192,6 +195,7 @@ def run_recording_downloads(monkeypatch, tmp_path):
         config["output"] = {
             "csv_file": str(tmp_path / "scores.csv"),
             "html_file": str(tmp_path / "map.html"),
+            "overview_file": str(tmp_path / "overview.html"),
         }
         return requested, fs.FlatScorer(config, verbose=False).run()
 

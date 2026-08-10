@@ -203,7 +203,9 @@ def test_saturation_half_values_are_configurable():
 
 def test_log_score_breakdown_reports_shares_and_contributions(capsys):
     scorer = make_scorer()
-    scorer.log_score_breakdown({"Flat A": METRICS})
+    # Takes the already-computed breakdowns now, not the raw metrics: `run()`
+    # computes them once and feeds both the log and the overview report.
+    scorer.log_score_breakdown({"Flat A": scorer.score_breakdown(METRICS, scorer.weights)})
     out = capsys.readouterr().out
     assert "Score breakdown" in out
     assert "TOTAL" in out
