@@ -20,6 +20,12 @@ from __future__ import annotations
 import os
 import sys
 
+import platformdirs
+
+# Used for the per-user cache directory. Capitalized because on macOS and Windows
+# this lands somewhere the user actually browses.
+APP_NAME = "FlatScorer"
+
 # Where read-only resources shipped with the code actually live. Under
 # PyInstaller that is the unpacked bundle; otherwise it is this package
 # directory, which covers both an editable install and site-packages.
@@ -47,22 +53,41 @@ def resource_path(*parts: str) -> str:
 def cache_dir() -> str:
     """Directory for the osmnx HTTP cache.
 
-    Relative to the working directory, matching osmnx's own default, which is
-    what this returned implicitly before it was set explicitly.
+    Per-user, not per-working-directory. osmnx's own default is `./cache`, which
+    means the cache is only reused when you happen to run from the same place —
+    and it drops a directory into whatever you were standing in. A downloaded
+    street network is expensive and identical wherever you ask for it, so it
+    belongs somewhere shared.
+
+    osmnx creates this itself on first write, so nothing here has to.
     """
-    return "cache"
+    return platformdirs.user_cache_dir(APP_NAME)
 
 
 def output_dir() -> str:
-    """Directory the score table and map are written into."""
-    return "."
+    """Directory the score table and map are written into.
+
+    Relative to the working directory, which is the right default for a CLI:
+    results are about the run you just did, so they land where you are. `output/`
+    rather than the bare directory only so a run doesn't scatter files into a
+    checkout or a home directory.
+    """
+    return "output"
 
 
 def output_path(filename: str) -> str:
-    """Where a generated file goes, when the config doesn't say.
-
-    `normpath` is what keeps this byte-identical to the bare filenames that were
-    hard-coded before: joining "." with "apartment_scores.csv" and normalizing
-    gives the name back unchanged, while a real `output_dir()` prefixes it.
-    """
+    """Where a generated file goes, when the config doesn't say."""
     return os.path.normpath(os.path.join(output_dir(), filename))
+
+
+def ensure_parent(path: str) -> str:
+    """Create the directory `path` will be written into, and return `path`.
+
+    Needed because `output_dir()` is no longer guaranteed to exist. Applied to
+    whatever path is actually being written, not just the default, so an explicit
+    `output.csv_file` pointing somewhere new works too rather than failing at the
+    very end of a multi-minute run.
+    """
+    parent = os.path.dirname(os.path.abspath(path))
+    os.makedirs(parent, exist_ok=True)
+    return path

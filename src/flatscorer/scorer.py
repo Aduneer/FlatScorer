@@ -533,14 +533,14 @@ class FlatScorer:
 
         self.log_score_breakdown(metrics_by_name)
 
-        csv_file = self.output_config.get("csv_file", paths.output_path("apartment_scores.csv"))
+        csv_file = paths.ensure_parent(self.output_config.get("csv_file", paths.output_path("apartment_scores.csv")))
         df.to_csv(csv_file, index=False)
         self._log(f"\n[+] Saved score table to {csv_file}")
 
         self.run_sensitivity_check(metrics_by_name)
 
         # Generate Folium Map
-        html_file = self.output_config.get("html_file", paths.output_path("apartment_map.html"))
+        html_file = paths.ensure_parent(self.output_config.get("html_file", paths.output_path("apartment_map.html")))
         self.generate_map(df, resolved_destinations, html_file, routes_by_candidate)
 
         self._progress_finish()

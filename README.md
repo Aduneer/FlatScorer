@@ -236,11 +236,22 @@ thing in every run — and a field of similar flats is allowed to look similar.
 
 ### Output
 
+Results are written into `output/` beside wherever you ran the tool, which is
+created if it doesn't exist. Point `output.csv_file` / `output.html_file`
+somewhere else if you'd rather — a path into a directory that doesn't exist yet
+works, it gets created too.
+
+The OpenStreetMap download cache is separate and lives in your user cache
+directory (`~/.cache/FlatScorer` on Linux, `~/Library/Caches/FlatScorer` on
+macOS, `%LOCALAPPDATA%\FlatScorer\Cache` on Windows). A downloaded street network
+is expensive and identical wherever you ask for it, so it's shared across runs
+instead of being rebuilt per working directory.
+
 | Artifact | Description |
 |---|---|
 | Terminal table | Ranked summary printed to stdout |
-| `apartment_scores.csv` | Full metrics for every candidate |
-| `apartment_map.html` | Interactive Folium map with color-coded pins and predicted commute routes |
+| `output/apartment_scores.csv` | Full metrics for every candidate |
+| `output/apartment_map.html` | Interactive Folium map with color-coded pins and predicted commute routes |
 | Sensitivity report | ±20% weight perturbation check on ranking stability |
 
 ## Configuration
@@ -304,8 +315,8 @@ Everything is driven by a single JSON file. Generate a template with
   },
 
   "output": {
-    "csv_file": "apartment_scores.csv",
-    "html_file": "apartment_map.html"
+    "csv_file": "output/apartment_scores.csv",
+    "html_file": "output/apartment_map.html"
   }
 }
 ```
@@ -426,9 +437,9 @@ options:
 
 - Python 3.9+
 - Dependencies: `osmnx`, `networkx`, `geopandas`, `pandas`, `folium`,
-  `shapely`, `requests`, plus `scipy` and `scikit-learn` — osmnx treats those
-  last two as optional, but nearest-node lookup needs them, so routing fails
-  mid-run without them
+  `shapely`, `requests`, `platformdirs`, plus `scipy` and `scikit-learn` — osmnx
+  treats those last two as optional, but nearest-node lookup needs them, so
+  routing fails mid-run without them
 
 Install everything with:
 

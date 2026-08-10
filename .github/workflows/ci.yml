@@ -78,7 +78,7 @@ jobs:
           pip install --no-deps -e .
 
       - name: Confirm the floors are what actually got installed
-        run: pip freeze | grep -iE '^(osmnx|networkx|geopandas|pandas|folium|shapely|requests|scikit-learn|scipy)=='
+        run: pip freeze | grep -iE '^(osmnx|networkx|geopandas|pandas|folium|shapely|requests|platformdirs|scikit-learn|scipy)=='
 
       - name: Import check
         run: python -c "import flatscorer"

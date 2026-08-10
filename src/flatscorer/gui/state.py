@@ -12,6 +12,7 @@ from typing import Any
 import pandas as pd
 import streamlit as st
 
+from flatscorer import paths
 from flatscorer.config import DEFAULT_CONFIG
 from flatscorer.routing import DEFAULT_TRAVEL_MODE, TRAVEL_MODES
 
@@ -162,5 +163,12 @@ def _build_config() -> dict[str, Any]:
         "destinations": destinations,
         "weights": dict(st.session_state.weights),
         "parameters": dict(st.session_state.params),
-        "output": {"csv_file": "apartment_scores.csv", "html_file": "apartment_map.html"},
+        # Same defaults a generated config carries. The Run page overrides both
+        # with a temp directory before scoring, so these only matter for the
+        # config.json the sidebar exports — which is meant to run identically
+        # under the CLI.
+        "output": {
+            "csv_file": paths.output_path("apartment_scores.csv"),
+            "html_file": paths.output_path("apartment_map.html"),
+        },
     }

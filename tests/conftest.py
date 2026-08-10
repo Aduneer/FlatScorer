@@ -113,11 +113,16 @@ def offline_run(monkeypatch, tmp_path):
     monkeypatch.setattr(osm, "query_with_retry", lambda fn, **kw: responses.pop(0))
 
     def run(config: dict, graphs: dict[str, nx.MultiDiGraph] | None = None,
-            progress=None) -> pd.DataFrame:
-        config["output"] = {
-            "csv_file": str(tmp_path / "scores.csv"),
-            "html_file": str(tmp_path / "map.html"),
-        }
+            progress=None, override_output: bool = True) -> pd.DataFrame:
+        # Outputs are redirected into tmp_path so a run doesn't litter the
+        # checkout. `override_output=False` leaves the config alone, which is how
+        # the default output location itself gets tested - pair it with
+        # `monkeypatch.chdir`, since the default is relative to the cwd.
+        if override_output:
+            config["output"] = {
+                "csv_file": str(tmp_path / "scores.csv"),
+                "html_file": str(tmp_path / "map.html"),
+            }
         # run() downloads one graph per travel mode present in `destinations`, in
         # first-mentioned order, and then the POIs - so the queue has to match.
         modes = list(dict.fromkeys(

@@ -15,6 +15,7 @@ from __future__ import annotations
 import math
 from typing import Any
 
+from . import paths
 from .osm import DEFAULT_POI_DEDUPE_TOLERANCE_M
 from .routing import (
     DEFAULT_CYCLING_SPEED_M_PER_MIN,
@@ -80,9 +81,13 @@ DEFAULT_CONFIG = {
         "projected_crs": "auto",
         "show_walk_routes": True
     },
+    # Written out explicitly rather than left to the defaults in `paths`, so a
+    # generated config shows where its results will land and can be pointed
+    # elsewhere without reading the source. Derived from `paths` all the same,
+    # so there is still only one place that decides.
     "output": {
-        "csv_file": "apartment_scores.csv",
-        "html_file": "apartment_map.html"
+        "csv_file": paths.output_path("apartment_scores.csv"),
+        "html_file": paths.output_path("apartment_map.html")
     }
 }
 

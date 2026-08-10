@@ -13,8 +13,7 @@ dist/
 *.egg-info/
 
 # Generated FlatScorer Output Files
-apartment_scores.csv
-apartment_map.html
+output/
 
 # User Configuration Overrides
 # Keep default config templates tracked, but ignore custom local configs with secrets or personal addresses
@@ -22,6 +21,8 @@ config.json
 !config.example.json
 
 # Spatial / OSMnx Cache Directories
+# The osmnx cache now lives in the per-user cache dir, not here; these two stay
+# so a checkout that still has one from an older version doesn't get committed.
 .cache/
 cache/
 

@@ -64,7 +64,7 @@
     "show_walk_routes": true
   },
   "output": {
-    "csv_file": "apartment_scores.csv",
-    "html_file": "apartment_map.html"
+    "csv_file": "output/apartment_scores.csv",
+    "html_file": "output/apartment_map.html"
   }
 }

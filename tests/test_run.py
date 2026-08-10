@@ -232,3 +232,48 @@ def test_progress_is_optional_and_changes_nothing(offline_run):
     silent = offline_run(one_destination_config())
     watched = offline_run(one_destination_config(), progress=ProgressLog())
     pd.testing.assert_frame_equal(silent, watched)
+
+
+# ------------------------------------------------------------- output location --
+
+def test_the_results_default_into_an_output_directory_under_the_cwd(offline_run, monkeypatch, tmp_path):
+    """A run with no `output` block writes into ./output, creating it.
+
+    Before this, both files landed loose in whatever directory you ran from.
+    """
+    monkeypatch.chdir(tmp_path)
+    config = one_destination_config()
+    config.pop("output", None)
+
+    offline_run(config, override_output=False)
+
+    assert (tmp_path / "output" / "apartment_scores.csv").is_file()
+    assert (tmp_path / "output" / "apartment_map.html").is_file()
+    assert not (tmp_path / "apartment_scores.csv").exists(), "still writing into the cwd"
+
+
+def test_an_explicit_output_path_still_wins(offline_run, monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    config = one_destination_config()
+    config["output"] = {"csv_file": "mine.csv", "html_file": "mine.html"}
+
+    offline_run(config, override_output=False)
+
+    assert (tmp_path / "mine.csv").is_file()
+    assert (tmp_path / "mine.html").is_file()
+    assert not (tmp_path / "output").exists()
+
+
+def test_an_explicit_path_into_a_missing_directory_is_created(offline_run, monkeypatch, tmp_path):
+    """Otherwise the failure lands at the very end of a multi-minute run."""
+    monkeypatch.chdir(tmp_path)
+    config = one_destination_config()
+    config["output"] = {
+        "csv_file": str(tmp_path / "nowhere" / "scores.csv"),
+        "html_file": str(tmp_path / "nowhere" / "map.html"),
+    }
+
+    offline_run(config, override_output=False)
+
+    assert (tmp_path / "nowhere" / "scores.csv").is_file()
+    assert (tmp_path / "nowhere" / "map.html").is_file()
