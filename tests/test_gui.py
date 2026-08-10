@@ -12,6 +12,7 @@ files back — is tested without a real run.
 from __future__ import annotations
 
 import os
+import textwrap
 
 import pandas as pd
 import pytest
@@ -19,7 +20,8 @@ import pytest
 st = pytest.importorskip("streamlit")
 from streamlit.testing.v1 import AppTest  # noqa: E402
 
-APP = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "streamlit_app.py")
+APP = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                   "src", "flatscorer", "gui", "app.py")
 
 CANDIDATES = "🏠 Candidates"
 WEIGHTS = "⚖️ Weights & Parameters"
@@ -98,11 +100,11 @@ def test_edited_rent_reaches_the_config_handed_to_the_scorer():
     app.session_state["main_nav_radio"] = WEIGHTS
     app.run()
 
-    import streamlit_app
+    from flatscorer.gui import state as gui_state
 
     with pytest.MonkeyPatch.context() as mp:
-        mp.setattr(streamlit_app.st, "session_state", app.session_state)
-        config = streamlit_app._build_config()
+        mp.setattr(gui_state.st, "session_state", app.session_state)
+        config = gui_state._build_config()
 
     assert config["candidates"][0]["rent"] == 999
 
@@ -160,21 +162,21 @@ def test_weights_page_carries_the_normalization_anchors_into_the_config():
     app.run()
     assert not app.exception, app.exception
 
-    import streamlit_app
+    from flatscorer.gui import state as gui_state
 
     with pytest.MonkeyPatch.context() as mp:
-        mp.setattr(streamlit_app.st, "session_state", app.session_state)
-        params = streamlit_app._build_config()["parameters"]
+        mp.setattr(gui_state.st, "session_state", app.session_state)
+        params = gui_state._build_config()["parameters"]
 
     assert params["rent_budget_eur"] > 0
     assert params["commute_cap_min"] > 0
     assert params["walking_speed_m_per_min"] > 0
-    assert set(params["saturation"]) == set(streamlit_app.DEFAULT_PARAMS["saturation"])
+    assert set(params["saturation"]) == set(gui_state.DEFAULT_PARAMS["saturation"])
 
 
 def test_the_walking_speed_widget_reaches_the_built_config():
     """The parameter is only tunable if the GUI's value actually gets scored."""
-    import streamlit_app
+    from flatscorer.gui import state as gui_state
 
     app = fresh_app()
     app.session_state["main_nav_radio"] = WEIGHTS
@@ -186,15 +188,15 @@ def test_the_walking_speed_widget_reaches_the_built_config():
     assert not app.exception, app.exception
 
     with pytest.MonkeyPatch.context() as mp:
-        mp.setattr(streamlit_app.st, "session_state", app.session_state)
-        params = streamlit_app._build_config()["parameters"]
+        mp.setattr(gui_state.st, "session_state", app.session_state)
+        params = gui_state._build_config()["parameters"]
 
     assert params["walking_speed_m_per_min"] == 100.0
 
 
 def test_the_cycling_speed_widget_reaches_the_built_config():
     """Same contract as the walking pace: tunable only if the GUI's value scores."""
-    import streamlit_app
+    from flatscorer.gui import state as gui_state
 
     app = fresh_app()
     app.session_state["main_nav_radio"] = WEIGHTS
@@ -206,32 +208,32 @@ def test_the_cycling_speed_widget_reaches_the_built_config():
     assert not app.exception, app.exception
 
     with pytest.MonkeyPatch.context() as mp:
-        mp.setattr(streamlit_app.st, "session_state", app.session_state)
-        params = streamlit_app._build_config()["parameters"]
+        mp.setattr(gui_state.st, "session_state", app.session_state)
+        params = gui_state._build_config()["parameters"]
 
     assert params["cycling_speed_m_per_min"] == 200.0
 
 
 def test_the_mode_dropdown_can_only_offer_modes_the_engine_accepts():
     """A dropdown listing a mode validate_config rejects would be a dead end."""
-    import streamlit_app
-    from FlatScorer import TRAVEL_MODES
+    from flatscorer.gui import widgets as gui_widgets
+    from flatscorer.routing import TRAVEL_MODES
 
-    assert streamlit_app.MODE_CHOICES == list(TRAVEL_MODES)
+    assert gui_widgets.MODE_CHOICES == list(TRAVEL_MODES)
 
 
 def test_a_cycling_destination_survives_the_round_trip_into_a_config():
-    import streamlit_app
-    from FlatScorer import validate_config
+    from flatscorer.config import validate_config
+    from flatscorer.gui import state as gui_state
 
     app = fresh_app()
     with pytest.MonkeyPatch.context() as mp:
-        mp.setattr(streamlit_app.st, "session_state", app.session_state)
+        mp.setattr(gui_state.st, "session_state", app.session_state)
         app.session_state.destinations_df = pd.DataFrame([
             {"name": "Office", "address": "Alexanderplatz 1, Berlin", "weight": 0.2,
              "mode": "bike", "icon": "briefcase", "color": "blue"},
         ])
-        config = streamlit_app._build_config()
+        config = gui_state._build_config()
 
     assert config["destinations"]["Office"]["mode"] == "bike"
     assert validate_config(config) == []
@@ -239,16 +241,16 @@ def test_a_cycling_destination_survives_the_round_trip_into_a_config():
 
 def test_a_destination_row_with_no_mode_column_still_builds_a_walking_destination():
     """An uploaded pre-cycling config has no 'mode' at all — it must still run."""
-    import streamlit_app
-    from FlatScorer import validate_config
+    from flatscorer.config import validate_config
+    from flatscorer.gui import state as gui_state
 
     app = fresh_app()
     with pytest.MonkeyPatch.context() as mp:
-        mp.setattr(streamlit_app.st, "session_state", app.session_state)
+        mp.setattr(gui_state.st, "session_state", app.session_state)
         app.session_state.destinations_df = pd.DataFrame([
             {"name": "Office", "address": "Alexanderplatz 1, Berlin", "weight": 0.2},
         ])
-        config = streamlit_app._build_config()
+        config = gui_state._build_config()
 
     assert config["destinations"]["Office"]["mode"] == "walk"
     assert validate_config(config) == []
@@ -257,8 +259,8 @@ def test_a_destination_row_with_no_mode_column_still_builds_a_walking_destinatio
 def test_editing_a_saturation_widget_does_not_mutate_the_module_default():
     # `params` nests a dict, so a shallow copy of DEFAULT_PARAMS would let the
     # widgets rewrite the built-in defaults for the rest of the process.
-    import streamlit_app
-    from FlatScorer import DEFAULT_SATURATION
+    from flatscorer.gui import state as gui_state
+    from flatscorer.scoring import DEFAULT_SATURATION
 
     app = fresh_app()
     app.session_state["main_nav_radio"] = WEIGHTS
@@ -268,7 +270,7 @@ def test_editing_a_saturation_widget_does_not_mutate_the_module_default():
 
     assert not app.exception, app.exception
     assert app.session_state.params["saturation"]["transit"] == 99.0
-    assert streamlit_app.DEFAULT_PARAMS["saturation"]["transit"] == DEFAULT_SATURATION["transit"]
+    assert gui_state.DEFAULT_PARAMS["saturation"]["transit"] == DEFAULT_SATURATION["transit"]
     assert DEFAULT_SATURATION["transit"] != 99.0
 
 
@@ -276,11 +278,11 @@ RUN = "🚀 Run & Results"
 
 
 def build_config_from(app: AppTest) -> dict:
-    import streamlit_app
+    from flatscorer.gui import state as gui_state
 
     with pytest.MonkeyPatch.context() as mp:
-        mp.setattr(streamlit_app.st, "session_state", app.session_state)
-        return streamlit_app._build_config()
+        mp.setattr(gui_state.st, "session_state", app.session_state)
+        return gui_state._build_config()
 
 
 def test_a_cleared_rent_cell_becomes_zero_rather_than_nan():
@@ -301,21 +303,21 @@ def test_the_candidates_frame_always_offers_a_url_column():
 
 
 def test_loading_a_config_without_links_still_offers_the_url_column():
-    import streamlit_app
+    from flatscorer.gui import state as gui_state
 
     app = fresh_app()
     with pytest.MonkeyPatch.context() as mp:
-        mp.setattr(streamlit_app.st, "session_state", app.session_state)
-        streamlit_app._load_config_into_state({
+        mp.setattr(gui_state.st, "session_state", app.session_state)
+        gui_state._load_config_into_state({
             "candidates": [{"name": "Flat A", "address": "1 Main St", "rent": 1800}],
             "destinations": {},
         })
 
-    assert list(app.session_state.candidates_df.columns) == list(streamlit_app.CANDIDATE_COLUMNS)
+    assert list(app.session_state.candidates_df.columns) == list(gui_state.CANDIDATE_COLUMNS)
 
 
 def test_a_listing_url_typed_into_the_editor_reaches_the_built_config():
-    from FlatScorer import validate_config
+    from flatscorer.config import validate_config
 
     app = fresh_app()
     edit_cell(app, 0, "url", "https://example.com/expose/1")
@@ -347,7 +349,7 @@ def test_a_cleared_listing_url_is_omitted_rather_than_exported_as_nan():
 
 
 def test_a_candidate_with_no_rent_blocks_the_run_button():
-    from FlatScorer import validate_config
+    from flatscorer.config import validate_config
 
     app = fresh_app()
     edit_cell(app, 0, "rent", None)
@@ -372,16 +374,16 @@ def test_the_demo_config_leaves_the_run_button_enabled():
 
 
 def test_the_gui_launcher_resolves_the_app_it_ships_with():
-    """The `flatscorer-gui` entry point locates streamlit_app.py by path.
+    """The `flatscorer-gui` entry point locates gui/app.py by path.
 
     `streamlit run` needs a file, and after `pip install` that file lives in
     site-packages rather than the cwd — so a launcher that guessed a relative
     path would work from a checkout and fail everywhere else.
     """
-    import flatscorer_gui
+    from flatscorer import launcher
 
-    assert os.path.isfile(flatscorer_gui.app_path())
-    assert os.path.samefile(flatscorer_gui.app_path(), APP)
+    assert os.path.isfile(launcher.app_path())
+    assert os.path.samefile(launcher.app_path(), APP)
 
 
 REPORTED: list[tuple[float, str]] = []
@@ -429,7 +431,7 @@ def test_the_run_page_drives_a_progress_bar_from_the_engine(monkeypatch):
     A wrong argument name or an out-of-range fraction only shows up here, since
     `st.progress` is the one thing the engine tests can't exercise.
     """
-    import FlatScorer as engine
+    from flatscorer import scorer as engine
 
     REPORTED.clear()
     monkeypatch.setattr(engine, "FlatScorer", FakeScorer)
@@ -449,7 +451,7 @@ def test_the_run_page_drives_a_progress_bar_from_the_engine(monkeypatch):
 
 
 def _run_page_after_a_run(monkeypatch, url=None) -> AppTest:
-    import FlatScorer as engine
+    from flatscorer import scorer as engine
 
     monkeypatch.setattr(engine, "FlatScorer", FakeScorer)
     monkeypatch.setattr(FakeScorer, "url", url)
@@ -491,6 +493,25 @@ def test_the_winner_panel_has_no_link_when_the_top_flat_has_none():
         assert "View listing" not in _winner_panel(app)
 
 
+@pytest.mark.parametrize("url", [None, "https://example.com/expose/1"])
+def test_the_winner_panel_html_block_is_never_broken_by_a_blank_line(url):
+    """A blank line inside the block leaks the closing `</div>` as visible text.
+
+    Streamlit dedents markdown, and `textwrap.dedent` normalizes a whitespace-only
+    line to empty. A blank line ends a raw-HTML block in Markdown, so everything
+    after it — here the two closing `</div>` tags — renders as literal text under
+    the panel. That is what an unlinked winner used to do, which is every
+    candidate in the demo config.
+    """
+    with pytest.MonkeyPatch.context() as mp:
+        app = _run_page_after_a_run(mp, url=url)
+        panel = _winner_panel(app)
+
+    blanks = [i for i, line in enumerate(textwrap.dedent(panel).splitlines()[1:], 1)
+              if not line.strip()]
+    assert not blanks, f"blank line(s) at {blanks} will leak the closing tags as text:\n{panel}"
+
+
 def test_the_winner_panel_escapes_the_listing_url():
     """The panel is rendered with unsafe_allow_html, and the URL can arrive from
     an uploaded config."""
@@ -504,7 +525,7 @@ def test_the_winner_panel_escapes_the_listing_url():
 
 def test_the_run_page_states_how_long_a_run_takes(monkeypatch):
     """The timing note used to live only in the sidebar, where it was missed."""
-    import FlatScorer as engine
+    from flatscorer import scorer as engine
 
     monkeypatch.setattr(engine, "FlatScorer", FakeScorer)
     app = AppTest.from_file(APP, default_timeout=30)

@@ -1,14 +1,13 @@
-#!/usr/bin/env python3
 """Console-script launcher for the FlatScorer Streamlit GUI.
 
 `streamlit run` takes a *file path*, not an importable module name, so an
-installed `flatscorer-gui` command has to work out where `streamlit_app.py`
-actually landed — site-packages for a normal install, the checkout for an
-editable one. It sits next to this module either way.
+installed `flatscorer-gui` command has to work out where `gui/app.py` actually
+landed. `paths.resource_path` owns that question — site-packages for a normal
+install, the checkout for an editable one, the unpacked bundle when frozen.
 
-Importing `streamlit_app` to locate it is not an option: it builds the whole
-page at import time (`st.set_page_config` and the nav run at module level), so
-importing it outside a Streamlit runtime does real work and prints warnings.
+Importing `app` to locate it is not an option: it builds the whole page at import
+time (`st.set_page_config` and `main()` run at module level), so importing it
+outside a Streamlit runtime does real work and prints warnings.
 """
 
 from __future__ import annotations
@@ -16,12 +15,14 @@ from __future__ import annotations
 import os
 import sys
 
-APP_FILENAME = "streamlit_app.py"
+from . import paths
+
+APP_FILENAME = "app.py"
 
 
 def app_path() -> str:
-    """Absolute path to the Streamlit app shipped alongside this module."""
-    return os.path.join(os.path.dirname(os.path.abspath(__file__)), APP_FILENAME)
+    """Absolute path to the Streamlit app shipped alongside this package."""
+    return paths.resource_path("gui", APP_FILENAME)
 
 
 def main():

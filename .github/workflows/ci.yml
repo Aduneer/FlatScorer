@@ -26,12 +26,13 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
+          pip install --no-deps -e .
 
       - name: Import check
-        run: python -c "import FlatScorer"
+        run: python -c "import flatscorer"
 
       - name: Generate sample config
-        run: python FlatScorer.py --generate-config /tmp/config.json
+        run: python -m flatscorer --generate-config /tmp/config.json
 
       - name: Validate generated config is well-formed JSON
         run: python -c "import json; json.load(open('/tmp/config.json'))"
@@ -43,14 +44,14 @@ jobs:
         run: |
           python - <<'PY'
           import networkx as nx
-          import FlatScorer
+          from flatscorer.routing import route_time
 
           G = nx.MultiDiGraph(crs="EPSG:4326")
           G.add_node(1, x=13.0, y=52.0)
           G.add_node(2, x=13.01, y=52.0)
           G.add_edge(1, 2, length=1000.0)
 
-          minutes, route = FlatScorer.route_time(G, (52.0, 13.0), (52.0, 13.01))
+          minutes, route = route_time(G, (52.0, 13.0), (52.0, 13.01))
           assert route == [(52.0, 13.0), (52.0, 13.01)], route
           print(f"routed OK: {minutes:.2f} min")
           PY
@@ -74,28 +75,29 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements-min.txt
+          pip install --no-deps -e .
 
       - name: Confirm the floors are what actually got installed
         run: pip freeze | grep -iE '^(osmnx|networkx|geopandas|pandas|folium|shapely|requests|scikit-learn|scipy)=='
 
       - name: Import check
-        run: python -c "import FlatScorer"
+        run: python -c "import flatscorer"
 
       - name: Generate sample config
-        run: python FlatScorer.py --generate-config /tmp/config.json
+        run: python -m flatscorer --generate-config /tmp/config.json
 
       - name: Route over a tiny in-memory graph
         run: |
           python - <<'PY'
           import networkx as nx
-          import FlatScorer
+          from flatscorer.routing import route_time
 
           G = nx.MultiDiGraph(crs="EPSG:4326")
           G.add_node(1, x=13.0, y=52.0)
           G.add_node(2, x=13.01, y=52.0)
           G.add_edge(1, 2, length=1000.0)
 
-          minutes, route = FlatScorer.route_time(G, (52.0, 13.0), (52.0, 13.01))
+          minutes, route = route_time(G, (52.0, 13.0), (52.0, 13.01))
           assert route == [(52.0, 13.0), (52.0, 13.01)], route
           print(f"routed OK: {minutes:.2f} min")
           PY
@@ -149,14 +151,20 @@ jobs:
         run: cd / && /tmp/pkgtest/bin/flatscorer --generate-config /tmp/packaged.json
 
       - name: The installed package carries every module it needs
-        run: cd / && /tmp/pkgtest/bin/python -c "import FlatScorer, flatscorer_gui; print(flatscorer_gui.app_path())"
+        run: cd / && /tmp/pkgtest/bin/python -c "import flatscorer; from flatscorer import launcher; print(launcher.app_path())"
 
-      - name: The GUI launcher finds the app it ships with
+      # app.py is the one file located by *path* rather than imported, and the
+      # banner is loaded at runtime - so both have to survive packaging, and
+      # neither would be missed by an import check.
+      - name: The GUI launcher and its assets ship with the package
         run: |
           cd / && /tmp/pkgtest/bin/python -c "
-          import os, flatscorer_gui
-          assert os.path.isfile(flatscorer_gui.app_path()), flatscorer_gui.app_path()
-          print('streamlit_app.py shipped OK')
+          import os
+          from flatscorer import launcher, paths
+          assert os.path.isfile(launcher.app_path()), launcher.app_path()
+          banner = paths.resource_path('gui', 'assets', 'banner.svg')
+          assert os.path.isfile(banner), banner
+          print('gui/app.py and gui/assets shipped OK')
           "
 
   lint:

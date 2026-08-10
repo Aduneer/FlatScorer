@@ -1,6 +1,6 @@
 # Development tooling: linting and the offline test suite.
-# The GUI tests drive streamlit_app.py through streamlit.testing, so the GUI
-# requirements are needed too.
+# The GUI tests drive src/flatscorer/gui/app.py through streamlit.testing, so
+# the GUI requirements are needed too.
 -r requirements-gui.txt
 
 pytest>=8.0.0,<10.0

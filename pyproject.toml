@@ -42,14 +42,20 @@ Homepage = "https://github.com/Aduneer/FlatScorer"
 Issues = "https://github.com/Aduneer/FlatScorer/issues"
 
 [project.scripts]
-flatscorer = "FlatScorer:main"
-flatscorer-gui = "flatscorer_gui:main"
+flatscorer = "flatscorer.cli:main"
+flatscorer-gui = "flatscorer.launcher:main"
 
 [tool.setuptools]
-# FlatScorer is a flat set of top-level modules, not a package directory, so
-# list them explicitly - auto-discovery would otherwise refuse a root layout
-# that also holds tests/, docs/ and assets/.
-py-modules = ["FlatScorer", "streamlit_app", "flatscorer_gui"]
+# A src layout, so nothing is importable without being installed - which means
+# the tests exercise the same package a user gets, and no stray top-level module
+# name is claimed in site-packages.
+packages = ["flatscorer", "flatscorer.gui", "flatscorer.gui.views"]
+package-dir = { "" = "src" }
+
+[tool.setuptools.package-data]
+# The GUI's banner is loaded at runtime, so it has to ship inside the package
+# rather than sitting in the repo's assets/ directory with the README images.
+"flatscorer.gui" = ["assets/*"]
 
 [tool.setuptools.dynamic]
 dependencies = { file = ["requirements.txt"] }
@@ -69,6 +75,10 @@ extend-select = [
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# Replaces the old root conftest.py sys.path hack. With a src layout the package
+# is not importable from the checkout, so point pytest at it directly - the
+# suite then runs without requiring an editable install first.
+pythonpath = ["src", "tests"]
 filterwarnings = [
     # streamlit.testing runs outside a ScriptRunContext by design.
     "ignore::DeprecationWarning:streamlit.*",

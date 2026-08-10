@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/banner.svg" alt="FlatScorer" width="700"/>
+  <img src="src/flatscorer/gui/assets/banner.svg" alt="FlatScorer" width="700"/>
 </p>
 
 <p align="center">
@@ -60,15 +60,20 @@ flatscorer --config config.json
 [`pipx`](https://pipx.pypa.io/) works too and keeps the fairly heavy geospatial
 stack out of your global site-packages: `pipx install "flatscorer[gui] @ git+https://github.com/Aduneer/FlatScorer.git"`.
 
-Or run it straight from a checkout, without installing:
+Or work from a checkout:
 
 ```bash
 git clone https://github.com/Aduneer/FlatScorer.git
 cd FlatScorer
-pip install -r requirements.txt
-python FlatScorer.py --generate-config config.json
-python FlatScorer.py --config config.json
+pip install -e .                      # editable — picks up your edits
+flatscorer --generate-config config.json
+flatscorer --config config.json
 ```
+
+The code lives in `src/flatscorer/`, so a bare `pip install -r requirements.txt`
+installs the dependencies but not the package itself and `python -m flatscorer`
+won't resolve. Either install it as above, or point Python at the source tree for
+a one-off: `PYTHONPATH=src python -m flatscorer --config config.json`.
 
 Running without `--config` uses built-in demo data (Washington, DC) so you can
 try it immediately.
@@ -87,13 +92,17 @@ flatscorer-gui
 
 # Or from a checkout
 pip install -r requirements-gui.txt
-streamlit run streamlit_app.py
+streamlit run src/flatscorer/gui/app.py
 ```
+
+`streamlit run` works from a checkout without installing the package — `app.py`
+puts `src/` on `sys.path` when `flatscorer` isn't importable, because Streamlit
+only adds the *script's* own directory.
 
 `flatscorer-gui` forwards any extra arguments to `streamlit run`, so
 `flatscorer-gui --server.port 8600` does what you'd expect.
 
-It reuses `FlatScorer.py` directly, so results are identical to the CLI —
+It reuses the `flatscorer` engine directly, so results are identical to the CLI —
 this is just a friendlier way to build the config and view the output.
 
 A run takes a couple of minutes, most of it waiting on Nominatim's one-request-
@@ -377,7 +386,7 @@ or OpenStreetMap download — and report **every** problem at once, naming the
 candidate rather than just the field:
 
 ```
-$ python FlatScorer.py --config config.json
+$ python -m flatscorer --config config.json
 Error: configuration is not valid (2 problem(s)):
   - candidates[0] ('Flat A'): 'rent' is missing - a flat with no rent would score
     as if it were free, taking full credit on the rent term and likely topping
@@ -402,8 +411,8 @@ disabled until they're fixed.
 ## CLI Reference
 
 ```
-usage: FlatScorer.py [-h] [-c CONFIG] [--generate-config FILE]
-                       [--csv FILE] [--html FILE] [-q]
+usage: flatscorer [-h] [-c CONFIG] [--generate-config FILE]
+                  [--csv FILE] [--html FILE] [-q]
 
 options:
   -c, --config PATH            JSON configuration file
@@ -424,8 +433,11 @@ options:
 Install everything with:
 
 ```bash
-pip install -r requirements.txt
+pip install -e .            # dependencies and the package itself
 ```
+
+`pip install -r requirements.txt` installs only the dependencies, which is what
+CI's matrix jobs want but not enough to run the tool from a checkout.
 
 ## Overpass API Resilience
 
@@ -457,18 +469,45 @@ Packaging metadata lives in `pyproject.toml`, which also holds the ruff and
 pytest config. The runtime dependency list is read from `requirements.txt` so
 there's exactly one source of truth; the `gui` and `dev` extras are declared
 inline and mirror `requirements-gui.txt` / `requirements-dev.txt`, which stay
-because CI installs from them. FlatScorer ships as three top-level modules
-(`FlatScorer`, `streamlit_app`, `flatscorer_gui`) rather than a package
-directory, so `[tool.setuptools] py-modules` lists them explicitly.
+because CI installs from them. The code lives in `src/flatscorer/`, a src
+layout, so nothing is importable without being installed and the tests exercise
+the same package a user gets. `pytest` finds it via
+`[tool.pytest.ini_options] pythonpath`.
 
-The tests cover the scoring maths (metric normalization, `compute_score`'s 0–10
-bounds under extreme inputs, the score breakdown, the sensitivity check), config
-validation, POI deduplication, the spatial helpers, geocode throttling/retry, map pin colouring, and
-the Streamlit `data_editor` state handling via `streamlit.testing`. Both `pytest`
-and `ruff check` gate CI.
+| Module | Owns |
+| --- | --- |
+| `config` | `DEFAULT_CONFIG` and `validate_config` |
+| `geocode`, `osm` | Nominatim and Overpass — the only network access |
+| `spatial`, `routing` | Projection, the search-area guard, per-mode routing |
+| `scoring` | Normalization, weighting, the score breakdown |
+| `mapping` | The Folium map |
+| `scorer` | `FlatScorer`, which drives all of the above in order |
+| `cli`, `launcher` | The `flatscorer` and `flatscorer-gui` entry points |
+| `paths` | Every runtime path, in one place |
+| `gui/` | The Streamlit front end — `app.py` plus `views/`, one module per nav page |
+
+Each leaf module owns the `DEFAULT_*` constants for its own concern and
+`config` imports downward from them, so the layering stays acyclic. `flatscorer`
+re-exports the public names lazily (PEP 562), which keeps `import flatscorer`
+from dragging in osmnx, geopandas and folium.
+
+Two rules apply to `gui/` specifically. Everything there uses **absolute
+imports**, because `streamlit run` takes a path and Streamlit `exec`s `app.py`
+with no package context — a relative import raises ImportError at runtime. And
+the view modules live in `views/`, never `pages/`: a `pages/` directory beside
+the entrypoint triggers Streamlit's multipage convention, which renders a second
+navigation menu on top of the app's own.
+
+Test modules mirror the source modules — `test_config`, `test_scoring`,
+`test_spatial`, `test_osm`, `test_routing`, `test_geocode`, `test_mapping`,
+`test_run` — plus `test_gui` for the Streamlit front end via `streamlit.testing`
+and `test_api` for the package-layout invariants (the lazy re-export table
+resolving, `import flatscorer` staying free of the geo stack, the two `gui/`
+rules above). Shared fixtures live in `tests/conftest.py`. Both `pytest` and
+`ruff check` gate CI.
 
 A `package` CI job builds the wheel and installs it into a clean venv with no
-checkout on `sys.path`, so a module missing from `py-modules` or a broken console
+checkout on `sys.path`, so a module missing from `packages` or a broken console
 script fails in CI rather than for whoever runs `pip install` first.
 
 `requirements.txt` declares version *ranges*, so CI installing the newest of each
