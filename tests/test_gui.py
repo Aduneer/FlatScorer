@@ -293,6 +293,59 @@ def test_a_cleared_rent_cell_becomes_zero_rather_than_nan():
     assert build_config_from(app)["candidates"][0]["rent"] == 0
 
 
+def test_the_candidates_frame_always_offers_a_url_column():
+    """The editor only shows columns the frame has, so a config predating the
+    field would silently stop offering it."""
+    app = fresh_app()
+    assert "url" in app.session_state.candidates_df.columns
+
+
+def test_loading_a_config_without_links_still_offers_the_url_column():
+    import streamlit_app
+
+    app = fresh_app()
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(streamlit_app.st, "session_state", app.session_state)
+        streamlit_app._load_config_into_state({
+            "candidates": [{"name": "Flat A", "address": "1 Main St", "rent": 1800}],
+            "destinations": {},
+        })
+
+    assert list(app.session_state.candidates_df.columns) == list(streamlit_app.CANDIDATE_COLUMNS)
+
+
+def test_a_listing_url_typed_into_the_editor_reaches_the_built_config():
+    from FlatScorer import validate_config
+
+    app = fresh_app()
+    edit_cell(app, 0, "url", "https://example.com/expose/1")
+    app.run()
+
+    assert not app.exception, app.exception
+    config = build_config_from(app)
+    assert config["candidates"][0]["url"] == "https://example.com/expose/1"
+    assert validate_config(config) == []
+
+
+def test_a_candidate_with_no_link_carries_no_url_key_at_all():
+    """A config with no links must round-trip exactly as it did before the field."""
+    app = fresh_app()
+    assert all("url" not in c for c in build_config_from(app)["candidates"])
+
+
+def test_a_cleared_listing_url_is_omitted_rather_than_exported_as_nan():
+    """A cleared cell arrives as NaN, which is truthy — `or ""` would export the
+    string "nan" as the listing link."""
+    app = fresh_app()
+    edit_cell(app, 0, "url", "https://example.com/expose/1")
+    app.run()
+    edit_cell(app, 0, "url", None)
+    app.run()
+
+    assert not app.exception, app.exception
+    assert "url" not in build_config_from(app)["candidates"][0]
+
+
 def test_a_candidate_with_no_rent_blocks_the_run_button():
     from FlatScorer import validate_config
 
@@ -341,6 +394,10 @@ class FakeScorer:
     page reads back, which is everything the GUI actually depends on.
     """
 
+    # Monkeypatched by the listing-link tests; None means the engine produced no
+    # `url` column at all, which is what a run with no links looks like.
+    url = None
+
     def __init__(self, config, verbose=True, progress=None):
         self.config = config
         self.progress = progress
@@ -355,8 +412,11 @@ class FakeScorer:
                 self.progress(fraction, label)
                 REPORTED.append((fraction, label))
 
-        df = pd.DataFrame([{"name": "Flat A", "score": 7.5, "rent_eur": 1200,
-                            "office_walk_min": 12.0, "lat": 52.0, "lon": 13.0}])
+        row = {"name": "Flat A", "score": 7.5, "rent_eur": 1200,
+               "office_walk_min": 12.0, "lat": 52.0, "lon": 13.0}
+        if self.url:
+            row["url"] = self.url
+        df = pd.DataFrame([row])
         df.to_csv(self.config["output"]["csv_file"], index=False)
         with open(self.config["output"]["html_file"], "w", encoding="utf-8") as f:
             f.write("<html>map</html>")
@@ -386,6 +446,60 @@ def test_the_run_page_drives_a_progress_bar_from_the_engine(monkeypatch):
     assert REPORTED[-1][0] == 1.0
     # The run still produced its results, i.e. the bar didn't replace them.
     assert "df" in app.session_state.last_result
+
+
+def _run_page_after_a_run(monkeypatch, url=None) -> AppTest:
+    import FlatScorer as engine
+
+    monkeypatch.setattr(engine, "FlatScorer", FakeScorer)
+    monkeypatch.setattr(FakeScorer, "url", url)
+
+    app = AppTest.from_file(APP, default_timeout=30)
+    app.run()
+    app.session_state["main_nav_radio"] = RUN
+    app.run()
+    app.button[0].click().run()
+    assert not app.exception, app.exception
+    return app
+
+
+def _winner_panel(app: AppTest) -> str:
+    # Matched on the opening div, not the bare class name — the injected CSS
+    # block mentions `.fs-winner-panel` too and renders as markdown first.
+    return next(m.value for m in app.markdown if '<div class="fs-winner-panel">' in m.value)
+
+
+def test_the_results_table_keeps_the_listing_url_column():
+    """lat/lon are dropped from the shown table — url must not be."""
+    with pytest.MonkeyPatch.context() as mp:
+        app = _run_page_after_a_run(mp, url="https://example.com/expose/1")
+        assert "url" in app.dataframe[0].value.columns
+
+
+def test_the_winner_panel_links_to_the_top_flats_listing():
+    with pytest.MonkeyPatch.context() as mp:
+        app = _run_page_after_a_run(mp, url="https://example.com/expose/1")
+        panel = _winner_panel(app)
+
+    assert "View listing" in panel
+    assert 'href="https://example.com/expose/1"' in panel
+
+
+def test_the_winner_panel_has_no_link_when_the_top_flat_has_none():
+    with pytest.MonkeyPatch.context() as mp:
+        app = _run_page_after_a_run(mp)
+        assert "View listing" not in _winner_panel(app)
+
+
+def test_the_winner_panel_escapes_the_listing_url():
+    """The panel is rendered with unsafe_allow_html, and the URL can arrive from
+    an uploaded config."""
+    with pytest.MonkeyPatch.context() as mp:
+        app = _run_page_after_a_run(mp, url='https://example.com/a"><script>alert(1)</script>')
+        panel = _winner_panel(app)
+
+    assert '"><script>' not in panel
+    assert "&quot;&gt;&lt;script&gt;" in panel
 
 
 def test_the_run_page_states_how_long_a_run_takes(monkeypatch):

@@ -3,7 +3,8 @@
     {
       "name": "Flat A - Dupont Circle",
       "address": "1500 Connecticut Ave NW, Washington, DC 20036, USA",
-      "rent": 1800
+      "rent": 1800,
+      "url": "https://www.example-listings.com/expose/12345"
     },
     {
       "name": "Flat B - Foggy Bottom",

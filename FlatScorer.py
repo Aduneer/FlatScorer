@@ -17,6 +17,7 @@ See README.md for full documentation.
 from __future__ import annotations
 
 import argparse
+import html
 import json
 import math
 import os
@@ -320,6 +321,39 @@ def destination_mode(info: Any) -> str:
     return mode if mode in TRAVEL_MODES else DEFAULT_TRAVEL_MODE
 
 
+def candidate_url(candidate: Any) -> str | None:
+    """The listing URL a candidate carries, or None if it has none.
+
+    Blank counts as absent: the GUI omits the key when its cell is empty, but a
+    hand-written `"url": ""` means the same thing and shouldn't be an error.
+
+    The scheme is re-checked here rather than assumed from `validate_config`,
+    because `generate_map` renders this into an `<a href>` and is reachable from
+    a config that skipped validation - `FlatScorer(config)` is a public entry
+    point. A link that isn't http(s) is dropped rather than rendered.
+    """
+    if not isinstance(candidate, dict):
+        return None
+    url = candidate.get("url")
+    if not isinstance(url, str):
+        return None
+    url = url.strip()
+    return url if url.lower().startswith(("http://", "https://")) else None
+
+
+def _listing_link_html(url: str | None) -> str:
+    """The map popup's link line, or nothing at all when there is no link.
+
+    Escaped: the popup is raw HTML in a file the user opens locally, and
+    config.json is meant to be passed around - so a link out of someone else's
+    config must not be able to close the href and open a tag of its own.
+    """
+    if not url:
+        return ""
+    return (f'<br><a href="{html.escape(url, quote=True)}" target="_blank" '
+            'rel="noopener noreferrer">🔗 View listing</a>')
+
+
 def commute_column(dest_name: str, mode: str = DEFAULT_TRAVEL_MODE) -> str:
     """Name of the table/CSV column carrying a destination's commute minutes.
 
@@ -360,6 +394,19 @@ def _validate_candidate(index: int, candidate: Any, problems: list[str], seen_na
     address = candidate.get("address")
     if not isinstance(address, str) or not address.strip():
         problems.append(f"{label}: 'address' is missing or empty")
+
+    # Checked before the rent block, which returns early - every problem has to
+    # be reported in one pass. Blank is absent, so only a non-empty value is
+    # judged. The scheme matters because the link becomes an href in the map
+    # popup and config.json is meant to be shared.
+    url = candidate.get("url")
+    if url is not None and str(url).strip():
+        if not isinstance(url, str):
+            problems.append(f"{label}: 'url' must be a string holding the listing link, "
+                            f"got {type(url).__name__}")
+        elif not url.strip().lower().startswith(("http://", "https://")):
+            problems.append(f"{label}: 'url' must start with http:// or https://, got {url!r} - "
+                            "it is rendered as a clickable link on the map")
 
     if "rent" not in candidate:
         problems.append(f"{label}: 'rent' is missing - a flat with no rent would score as if it were free, "
@@ -1266,6 +1313,12 @@ class FlatScorer:
         routes_by_candidate = {}
         rows = []
 
+        # The listing-link column appears only when something actually carries a
+        # link, so a config predating the field exports exactly the CSV it always
+        # did. Decided up front rather than by dropping an all-blank column after
+        # the fact, which would depend on the column's dtype surviving the frame.
+        any_listing_url = any(candidate_url(info["raw"]) for info in resolved_candidates.values())
+
         for name, info in resolved_candidates.items():
             self._progress_step(f"Scoring '{name}'...", PROGRESS_WEIGHTS["score"])
             lat, lon = info["coords"]
@@ -1321,6 +1374,9 @@ class FlatScorer:
 
             for dest_name, mins in dest_times.items():
                 row[commute_column(dest_name, dest_modes[dest_name])] = round(mins, 1)
+
+            if any_listing_url:
+                row["url"] = candidate_url(info["raw"]) or ""
 
             row["lat"] = lat
             row["lon"] = lon
@@ -1413,6 +1469,9 @@ class FlatScorer:
                 f"Transit stops: {row['transit_stops']}<br>"
                 f"Green area nearby: {row['green_area_m2']} m²<br>"
                 f"Distance to busy road: {row['dist_busy_road_m']} m"
+                # Last line so the click target sits at the bottom of the popup,
+                # and absent entirely when the flat carries no link.
+                + _listing_link_html(row.get("url"))
             )
             folium.Marker(
                 [row["lat"], row["lon"]],

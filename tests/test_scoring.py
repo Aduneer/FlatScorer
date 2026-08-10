@@ -614,6 +614,37 @@ def test_map_with_a_single_candidate_colours_it_on_the_same_absolute_scale(tmp_p
     assert marker_colours(out.read_text()) == ["green"]
 
 
+def test_the_popup_link_is_empty_when_there_is_no_listing_url():
+    assert fs._listing_link_html(None) == ""
+    assert fs._listing_link_html("") == ""
+
+
+def test_the_popup_link_escapes_the_url():
+    """The popup is raw HTML in a file opened locally, and config.json is shared —
+    so a link out of someone else's config must not be able to close the href."""
+    link = fs._listing_link_html('https://example.com/a"><script>alert(1)</script>')
+    assert '"><script>' not in link
+    assert "&quot;&gt;&lt;script&gt;" in link
+
+
+def test_the_map_popup_links_to_the_listing(tmp_path):
+    frame = map_frame([8.0])
+    frame["url"] = "https://example.com/expose/1"
+    out = tmp_path / "map.html"
+    make_scorer().generate_map(frame, {}, str(out))
+
+    html = out.read_text()
+    assert "View listing" in html
+    assert "https://example.com/expose/1" in html
+
+
+def test_the_map_popup_has_no_link_line_without_a_url(tmp_path):
+    """A run with no links must produce the popup it always did."""
+    out = tmp_path / "map.html"
+    make_scorer().generate_map(map_frame([8.0]), {}, str(out))
+    assert "View listing" not in out.read_text()
+
+
 # ------------------------------------------------------- geocode rate limiting --
 
 def test_geocode_safe_retries_transient_failures(monkeypatch):
@@ -706,6 +737,15 @@ def test_the_shipped_default_config_is_valid():
     assert fs.validate_config(fs.DEFAULT_CONFIG) == []
 
 
+def test_the_shipped_example_config_is_valid():
+    """config.example.json is what the README documents and what people copy."""
+    import json
+    import pathlib
+
+    example = pathlib.Path(__file__).resolve().parent.parent / "config.example.json"
+    assert fs.validate_config(json.loads(example.read_text(encoding="utf-8"))) == []
+
+
 def test_an_empty_weights_dict_is_valid_because_defaults_fill_in():
     # _resolve_weight falls back to DEFAULT_WEIGHTS, so omitting weights is fine.
     assert fs.validate_config(valid_config(weights={})) == []
@@ -742,6 +782,71 @@ def test_non_numeric_rent_is_rejected(rent):
 def test_rent_written_as_a_numeric_string_is_accepted():
     candidate = {"name": "Flat A", "address": "1 Main St", "rent": "1800"}
     assert fs.validate_config(valid_config(candidates=[candidate])) == []
+
+
+# -- listing URLs: optional, carried not scored --
+
+def test_a_candidate_with_a_listing_url_is_valid():
+    candidate = {"name": "Flat A", "address": "1 Main St", "rent": 1800,
+                 "url": "https://www.immobilienscout24.de/expose/123"}
+    assert fs.validate_config(valid_config(candidates=[candidate])) == []
+
+
+def test_a_blank_listing_url_means_no_link_rather_than_an_error():
+    """The GUI omits the key when the cell is empty, but a hand-written config
+    saying `"url": ""` means the same thing and shouldn't be a hard error."""
+    candidate = {"name": "Flat A", "address": "1 Main St", "rent": 1800, "url": "   "}
+    assert fs.validate_config(valid_config(candidates=[candidate])) == []
+    assert fs.candidate_url(candidate) is None
+
+
+@pytest.mark.parametrize("url", [
+    "javascript:alert(1)",
+    "ftp://example.com/flat",
+    "www.immobilienscout24.de/expose/123",
+    "//example.com/flat",
+])
+def test_a_listing_url_without_an_http_scheme_is_rejected(url):
+    """The URL ends up as an href in the map popup, and config.json is shared."""
+    candidate = {"name": "Flat A", "address": "1 Main St", "rent": 1800, "url": url}
+    problem = only_problem(valid_config(candidates=[candidate]))
+    assert "'url'" in problem
+    assert "http" in problem
+
+
+@pytest.mark.parametrize("url", [123, ["https://example.com"], {"href": "x"}])
+def test_a_non_string_listing_url_is_rejected(url):
+    candidate = {"name": "Flat A", "address": "1 Main St", "rent": 1800, "url": url}
+    assert "'url'" in only_problem(valid_config(candidates=[candidate]))
+
+
+def test_a_bad_listing_url_is_reported_alongside_the_other_problems():
+    """Validation reports everything in one pass - the URL check must not
+    short-circuit the rent check that follows it."""
+    config = valid_config(candidates=[
+        {"name": "Flat A", "address": "1 Main St", "url": "javascript:alert(1)"},
+    ])
+    problems = fs.validate_config(config)
+    assert len(problems) == 2, problems
+    assert any("'url'" in p for p in problems)
+    assert any("'rent'" in p for p in problems)
+
+
+def test_candidate_url_reports_none_when_the_key_is_absent():
+    assert fs.candidate_url({"name": "Flat A", "address": "1 Main St", "rent": 1800}) is None
+
+
+@pytest.mark.parametrize("url", ["javascript:alert(1)", "ftp://example.com", "example.com"])
+def test_candidate_url_drops_a_link_that_is_not_http(url):
+    """`FlatScorer(config).run()` is a public entry point, so `generate_map` can
+    be reached without `validate_config` ever having run. The scheme is checked
+    again here rather than assumed."""
+    assert fs.candidate_url({"name": "Flat A", "url": url}) is None
+
+
+def test_candidate_url_strips_surrounding_whitespace():
+    candidate = {"name": "Flat A", "url": "  https://example.com/flat  "}
+    assert fs.candidate_url(candidate) == "https://example.com/flat"
 
 
 # -- 5.1: report every problem at once, naming its owner --
@@ -1298,6 +1403,34 @@ def test_each_destination_keeps_its_own_cached_node(offline_run):
     row = df.iloc[0]
     assert row["near_office_walk_min"] == pytest.approx(1000.0 / 83.33, abs=0.05)
     assert row["far_office_walk_min"] == pytest.approx(3000.0 / 83.33, abs=0.05)
+
+
+def test_a_listing_url_reaches_the_score_table_and_the_csv(offline_run, tmp_path):
+    df = offline_run(valid_config(candidates=[
+        {"name": "Flat A", "address": "1 Main St", "rent": 1800,
+         "url": "https://example.com/expose/1"},
+    ]))
+    assert df.set_index("name").loc["Flat A", "url"] == "https://example.com/expose/1"
+    assert pd.read_csv(tmp_path / "scores.csv").loc[0, "url"] == "https://example.com/expose/1"
+
+
+def test_a_run_with_no_listing_urls_has_no_url_column_at_all(offline_run, tmp_path):
+    """Configs predating the field must produce exactly the output they used to."""
+    df = offline_run(valid_config())
+    assert "url" not in df.columns
+    assert "url" not in pd.read_csv(tmp_path / "scores.csv").columns
+
+
+def test_a_candidate_without_a_link_is_blank_rather_than_missing(offline_run, tmp_path):
+    """One linked flat brings the column in; the others just have nothing in it."""
+    df = offline_run(valid_config(candidates=[
+        {"name": "Flat A", "address": "1 Main St", "rent": 1800, "url": "https://example.com/a"},
+        {"name": "Flat B", "address": "2 Office Rd", "rent": 1700},
+    ]))
+    urls = df.set_index("name")["url"]
+    assert urls["Flat A"] == "https://example.com/a"
+    assert urls["Flat B"] == ""
+    assert pd.isna(pd.read_csv(tmp_path / "scores.csv").set_index("name").loc["Flat B", "url"])
 
 
 def test_the_node_cache_does_not_change_the_commute_times(monkeypatch, offline_run):

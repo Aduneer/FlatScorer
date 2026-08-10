@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import contextlib
 import copy
+import html
 import io
 import json
 import os
@@ -59,6 +60,15 @@ COLOR_CHOICES = [
     "lightgreen", "gray", "black",
 ]
 
+# `st.data_editor` only offers the columns its frame actually has, so every
+# candidate frame is reindexed onto this - otherwise a config written before
+# `url` existed would silently stop offering the field.
+CANDIDATE_COLUMNS = ("name", "address", "rent", "url")
+
+# Renders the domain rather than the raw link, so a 140-character listing URL
+# shows as `immobilienscout24.de` and the table stays readable.
+LISTING_URL_DISPLAY = r"https?://(?:www\.)?([^/]+)"
+
 DEFAULT_WEIGHTS = DEFAULT_CONFIG["weights"]
 DEFAULT_PARAMS = DEFAULT_CONFIG["parameters"]
 
@@ -70,12 +80,28 @@ MODE_EMOJI = {"walk": "🚶", "bike": "🚴"}
 
 # ----------------------------------------------------------- Helper Functions --
 
+def _candidate_frame(candidates: list[dict[str, Any]]) -> pd.DataFrame:
+    """Candidates as a frame carrying exactly `CANDIDATE_COLUMNS`.
+
+    Reindexed rather than trusted: `url` is optional and omitted when unset, so
+    an incoming config can legitimately have no `url` key on any candidate — and
+    the editor would then not show the column at all.
+
+    The blanks have to be empty strings, not NaN. Reindexing in a column nothing
+    supplies gives it float64 dtype, and `LinkColumn` refuses to edit a float
+    column — the whole page dies with a StreamlitAPIException, not just the cell.
+    """
+    frame = pd.DataFrame(candidates).reindex(columns=list(CANDIDATE_COLUMNS))
+    frame["url"] = frame["url"].fillna("").astype(str)
+    return frame
+
+
 def _init_state():
     """Seed session_state with the built-in demo config on first load."""
     if "candidates_df" in st.session_state:
         return
 
-    st.session_state.candidates_df = pd.DataFrame(DEFAULT_CONFIG["candidates"])
+    st.session_state.candidates_df = _candidate_frame(DEFAULT_CONFIG["candidates"])
 
     dest_rows = []
     for name, info in DEFAULT_CONFIG["destinations"].items():
@@ -122,7 +148,7 @@ def _reset_editor_state():
 
 def _load_config_into_state(config: dict[str, Any]):
     _reset_editor_state()
-    st.session_state.candidates_df = pd.DataFrame(config.get("candidates", []))
+    st.session_state.candidates_df = _candidate_frame(config.get("candidates", []))
 
     dest_rows = []
     for name, info in config.get("destinations", {}).items():
@@ -155,11 +181,20 @@ def _build_config() -> dict[str, Any]:
         # and validate_config would report the cryptic "got nan" instead of the
         # friendlier "rent is 0, enter the actual monthly rent".
         rent = pd.to_numeric(row.get("rent", 0), errors="coerce")
-        candidates.append({
+        candidate = {
             "name": row["name"],
             "address": row["address"],
             "rent": 0.0 if pd.isna(rent) else float(rent),
-        })
+        }
+        # Same NaN trap as rent: a cleared cell is truthy, so `or ""` would put
+        # the string "nan" in as the listing link. Omitted entirely when blank,
+        # so a config with no links round-trips exactly as it did before the
+        # field existed.
+        url = row.get("url")
+        url = "" if pd.isna(url) else str(url).strip()
+        if url:
+            candidate["url"] = url
+        candidates.append(candidate)
 
     destinations = {}
     for _, row in st.session_state.destinations_df.iterrows():
@@ -532,6 +567,26 @@ def _inject_custom_theme():
             color: var(--ink-muted);
             margin-top: 2px;
         }
+
+        /* Rust rather than pine: the one outbound link on the page, and the
+           only thing in the panel that leaves the app. */
+        .fs-winner-link {
+            display: inline-block;
+            margin-top: 10px;
+            padding: 4px 12px;
+            border: 1px solid var(--rust);
+            border-radius: 3px;
+            font-family: 'Space Mono', monospace;
+            font-size: 0.8rem;
+            color: var(--rust) !important;
+            text-decoration: none !important;
+            transition: background 0.15s ease, color 0.15s ease;
+        }
+
+        .fs-winner-link:hover {
+            background: var(--rust);
+            color: var(--ink-on-primary) !important;
+        }
         </style>
         """,
         unsafe_allow_html=True,
@@ -643,6 +698,15 @@ if selected_nav.startswith("🏠"):
             "name": st.column_config.TextColumn("Apartment Name / ID", required=True),
             "address": st.column_config.TextColumn("Full Address", required=True, width="large"),
             "rent": st.column_config.NumberColumn("Rent (€/month)", min_value=0, step=50, format="%d €"),
+            "url": st.column_config.LinkColumn(
+                "Listing",
+                display_text=LISTING_URL_DISPLAY,
+                validate=r"^https?://.+",
+                width="medium",
+                help="Optional link to the listing you found this flat on. It never affects "
+                     "the score — it rides along into the CSV and onto the map popup so you "
+                     "can click straight through from a result.",
+            ),
         },
         key="candidates_editor",
     ).reset_index(drop=True)
@@ -1030,6 +1094,18 @@ elif selected_nav.startswith("🚀"):
                 else:
                     sub_text = f"{margin:.2f} pts ahead of #2"
 
+                # The most likely click once a run finishes: the winner's own
+                # listing. NaN is truthy, so the `pd.isna` guard is what stops a
+                # linkless run rendering an href to the string "nan"; escaped
+                # because this panel is rendered with unsafe_allow_html and the
+                # URL can have come out of an uploaded config.
+                top_url = top_row.get("url")
+                top_url = "" if pd.isna(top_url) else str(top_url).strip()
+                top_link = (
+                    f'<a class="fs-winner-link" href="{html.escape(top_url, quote=True)}" '
+                    'target="_blank" rel="noopener noreferrer">🔗 View listing ↗</a>'
+                ) if top_url else ""
+
                 st.markdown(
                     f"""
                     <div class="fs-winner-panel">
@@ -1042,6 +1118,7 @@ elif selected_nav.startswith("🚀"):
                             <div class="fs-winner-eyebrow">🏆 Recommended Match</div>
                             <div class="fs-winner-name">{top_name}</div>
                             <div class="fs-winner-sub">Score {top_score:.2f} / {SCORE_SCALE_MAX:.0f} — {sub_text}</div>
+                            {top_link}
                         </div>
                     </div>
                     """,
@@ -1052,6 +1129,13 @@ elif selected_nav.startswith("🚀"):
             st.dataframe(
                 df.drop(columns=["lat", "lon"], errors="ignore").reset_index(drop=True),
                 width="stretch",
+                # Ignored when the run produced no links, so a config without
+                # them shows exactly the table it always did.
+                column_config={
+                    "url": st.column_config.LinkColumn(
+                        "Listing", display_text=LISTING_URL_DISPLAY,
+                    ),
+                },
             )
 
             c1, c2 = st.columns(2)

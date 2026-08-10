@@ -246,7 +246,11 @@ Everything is driven by a single JSON file. Generate a template with
     {
       "name": "Flat A - Kreuzberg",
       "address": "Oranienstraße 1, 10999 Berlin, Germany",
-      "rent": 1200
+      "rent": 1200,
+      // Optional. Never scored — carried into the CSV and the map popup so you
+      // can click from a result straight back to the listing. Omit it entirely
+      // if you have no link; must be http:// or https:// if you do.
+      "url": "https://www.example-listings.de/expose/12345"
     }
   ],
 
@@ -387,8 +391,10 @@ doesn't score neutrally — it scores *perfectly* on that term and tends to win.
 So a missing or non-positive rent is rejected rather than guessed at. The other
 checks cover missing names and addresses, duplicate candidate names (they'd
 silently overwrite each other), non-numeric or negative weights, an all-zero
-weight vector, non-positive normalization anchors, and an unrecognised
-destination travel `mode`.
+weight vector, non-positive normalization anchors, an unrecognised destination
+travel `mode`, and a candidate `url` that isn't `http://` or `https://` — that
+one is a scheme check rather than fussiness, since the link is rendered as a
+clickable href in the map popup and config files get passed around.
 
 In the GUI the same problems appear on the Run page and the run button stays
 disabled until they're fixed.
