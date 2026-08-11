@@ -2,7 +2,8 @@
 
 `query_with_retry` is the only thing in the package that should ever reach
 Overpass. Import-time side effect: this module configures the global osmnx
-settings, which is why `geocode` imports it for the useragent.
+settings, which is why `geocode` imports it - the `http_user_agent` set here is
+what lets this package talk to Nominatim and Overpass at all.
 """
 
 from __future__ import annotations
@@ -15,23 +16,55 @@ import geopandas as gpd
 import osmnx as ox
 import requests
 
-from . import paths
+from . import __version__, paths
+
+# How this tool introduces itself to Nominatim, Overpass and the tile servers.
+# Nominatim's policy is explicit that this is not optional and that a library's
+# own default will not do: "Provide a valid HTTP Referer or User-Agent
+# identifying the application (stock User-Agents as set by http libraries will
+# not do)."  https://operations.osmfoundation.org/policies/nominatim/
+USER_AGENT = f"FlatScorer/{__version__} (+https://github.com/Aduneer/FlatScorer)"
+
+
+def _apply_setting(name: str, value: Any):
+    """Assign an osmnx setting, refusing to invent one that doesn't exist.
+
+    `ox.settings` is a plain module, so `ox.settings.useragent = ...` does not
+    raise when the setting has been renamed - it silently creates a dead
+    attribute that nothing ever reads. That is not hypothetical: osmnx 1.x called
+    it `useragent` and 2.x calls it `http_user_agent`, so for the whole of the
+    2.x pin this package identified itself to Nominatim and Overpass as *osmnx*
+    while believing it had complied with the policy. Nothing failed, nothing
+    warned, and the one IP block we earned was attributed to osmnx's name.
+
+    Failing loudly at import is the point. A rename inside our `osmnx<3` pin is
+    unlikely, and CI would catch it long before a user does - which is a far
+    better trade than another silent multi-year miscompliance.
+    """
+    if not hasattr(ox.settings, name):
+        raise AttributeError(
+            f"osmnx has no setting named {name!r} - it was probably renamed upstream. "
+            "Fix the name here rather than letting the assignment silently do nothing; "
+            "some of these settings are policy obligations, not preferences."
+        )
+    setattr(ox.settings, name, value)
 
 
 def _configure_osmnx():
     """Apply this project's global osmnx settings. Idempotent, run at import."""
-    ox.settings.use_cache = True
-    ox.settings.log_console = False
+    _apply_setting("use_cache", True)
+    _apply_setting("log_console", False)
 
     # Set explicitly rather than left to osmnx's own default, which happens to be
     # the same "cache" relative to the working directory. Routing it through
     # `paths` is what makes relocating it a one-line change later - and a frozen
     # app has no usable working directory to default to.
-    ox.settings.cache_folder = paths.cache_dir()
+    _apply_setting("cache_folder", paths.cache_dir())
 
-    # Identify this tool to Nominatim, per its usage policy:
-    # https://operations.osmfoundation.org/policies/nominatim/
-    ox.settings.useragent = "FlatScorer (github.com/Aduneer/FlatScorer)"
+    # Both, not just one: osmnx sends a Referer of its own too, and a request
+    # claiming to be osmnx in either header is the same misidentification.
+    _apply_setting("http_user_agent", USER_AGENT)
+    _apply_setting("http_referer", USER_AGENT)
 
 
 _configure_osmnx()

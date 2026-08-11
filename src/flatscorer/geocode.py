@@ -1,7 +1,9 @@
 """Address to coordinates, under Nominatim's usage policy.
 
-Importing `osm` is not incidental: the osmnx useragent it configures is the
-policy obligation that lets this module talk to Nominatim at all.
+Importing `osm` is not incidental: the `http_user_agent` / `http_referer` it
+configures are the policy obligation that lets this module talk to Nominatim at
+all, and `osm._apply_setting` exists to make sure that obligation cannot go
+quietly unmet again.
 """
 
 from __future__ import annotations

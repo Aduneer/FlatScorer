@@ -312,3 +312,60 @@ def test_poi_dedupe_tolerance_is_validated():
 def test_a_zero_poi_dedupe_tolerance_is_allowed():
     """Unlike the normalization anchors, 0 is meaningful here."""
     assert fs.validate_config(valid_config(parameters={"poi_dedupe_tolerance_m": 0})) == []
+
+
+# --- identifying ourselves to OSM services ----------------------------------
+#
+# Nominatim's policy: "Provide a valid HTTP Referer or User-Agent identifying
+# the application (stock User-Agents as set by http libraries will not do)."
+# These bite because the obligation was silently unmet for the whole osmnx 2.x
+# pin - see `osm._apply_setting`.
+
+
+def test_flatscorer_identifies_itself_not_osmnx():
+    """The settings are applied at import of `flatscorer.osm`, which conftest did."""
+    from flatscorer import osm
+
+    assert "FlatScorer" in ox.settings.http_user_agent
+    assert "github.com/Aduneer/FlatScorer" in ox.settings.http_user_agent
+    # The exact failure this replaces: sending a library's own stock UA, which
+    # the policy names as insufficient.
+    assert "OSMnx" not in ox.settings.http_user_agent
+    assert ox.settings.http_user_agent == osm.USER_AGENT
+
+
+def test_the_referer_identifies_us_too():
+    """osmnx sends a Referer of its own; claiming to be osmnx there is the same bug."""
+    assert "FlatScorer" in ox.settings.http_referer
+    assert "OSMnx" not in ox.settings.http_referer
+
+
+def test_the_user_agent_carries_a_version():
+    """A bare project name can't be told apart across releases when triaging load."""
+    from flatscorer import __version__, osm
+
+    assert __version__ in osm.USER_AGENT
+
+
+def test_applying_an_unknown_osmnx_setting_raises():
+    """The guard itself. Without it a renamed setting assigns to nothing at all.
+
+    `ox.settings` is a plain module, so `setattr` always succeeds - which is how
+    `ox.settings.useragent = ...` kept "working" after osmnx 2.x renamed it to
+    `http_user_agent`, leaving every request identified as osmnx.
+    """
+    from flatscorer import osm
+
+    with pytest.raises(AttributeError) as excinfo:
+        osm._apply_setting("useragent", "FlatScorer")
+    assert "useragent" in str(excinfo.value)
+    # And nothing was written, so a typo can't half-apply.
+    assert not hasattr(ox.settings, "useragent")
+
+
+def test_every_setting_we_configure_exists_upstream():
+    """Re-running the real configuration must not raise, on this osmnx version."""
+    from flatscorer import osm
+
+    osm._configure_osmnx()  # idempotent by design
+    assert ox.settings.http_user_agent == osm.USER_AGENT
