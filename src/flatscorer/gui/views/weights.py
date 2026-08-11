@@ -221,7 +221,34 @@ def render():
         "Show predicted commute routes on map by default",
         value=bool(st.session_state.params.get("show_walk_routes", True)),
         help="Draws each candidate's shortest path to every destination on the map, over that destination's own network. "
-             "Cycled legs are dashed. Always toggleable via the map's layer control.",
+             "Cycled legs are dashed. Always toggleable via the map's layer control. "
+             "Has no effect in fast mode, which measures no routes to draw.",
     )
+
+    st.divider()
+    st.markdown("**How commutes are measured**")
+    r1, r2 = st.columns(2)
+    with r1:
+        approximate = st.checkbox(
+            "Fast mode (estimate commutes, skip the street-network download)",
+            value=st.session_state.params.get("routing_mode", DEFAULT_PARAMS["routing_mode"]) == "straight_line",
+            help="Estimates each commute from straight-line distance instead of routing over a downloaded "
+                 "street network. That download is the slowest step of a run by a wide margin, so this turns "
+                 "minutes into seconds. Measured across three cities the ranking barely moves - the top pick "
+                 "never changed - but the minutes themselves carry a few percent of error and are labelled "
+                 "'approx.' everywhere they appear.",
+        )
+        st.session_state.params["routing_mode"] = "straight_line" if approximate else "network"
+    with r2:
+        st.session_state.params["detour_factor"] = st.number_input(
+            "Detour factor",
+            min_value=1.0,
+            value=float(st.session_state.params.get("detour_factor", DEFAULT_PARAMS["detour_factor"])),
+            step=0.05,
+            disabled=not approximate,
+            help="How much longer a real route is than the straight line. It does not affect the ranking - a "
+                 "constant cannot reorder anything - so it only decides whether the displayed minutes are "
+                 "honest and which candidates fall past the commute cap. Measured city medians ran 1.21 to 1.35.",
+        )
 
 

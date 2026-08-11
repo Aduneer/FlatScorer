@@ -325,7 +325,9 @@ Everything is driven by a single JSON file. Generate a template with
       "gym": 1, "transit": 4, "green": 30
     },
     "projected_crs": "auto",       // auto-detect UTM zone, or e.g. "EPSG:25832"
-    "show_walk_routes": true       // draw predicted commute routes on the map by default
+    "show_walk_routes": true,      // draw predicted commute routes on the map by default
+    "routing_mode": "network",     // "network" routes over real streets; "straight_line" estimates
+    "detour_factor": 1.25          // straight_line only: how much longer a real route is
   },
 
   "output": {
@@ -403,7 +405,44 @@ Everything is driven by a single JSON file. Generate a template with
   visible. The routes trace each candidate's actual shortest path to every
   destination over that destination's own network (color-matched to the
   candidate's score, dashed for cycled legs) and can always be toggled via the
-  map's layer control regardless of this setting.
+  map's layer control regardless of this setting. Has no effect under
+  `"routing_mode": "straight_line"`, which measures no routes to draw.
+
+- **`routing_mode`** — How commutes are measured. `"network"` (the default)
+  downloads the street network and routes over it, which is exact and is by far
+  the slowest step of a run. `"straight_line"` estimates each commute from
+  straight-line distance instead and **skips that download entirely**, turning
+  a multi-minute run into a few seconds.
+
+  The approximation was measured before it was offered. Across three cities
+  chosen for their barriers — Budapest across the Danube, Berlin across the
+  Spree, Lisbon across its hills, 18 candidates each — the top pick never
+  changed, and the ranking held at every commute weight tried. Roughly 4% of
+  candidate *pairs* swapped, never by more than two places. The reason it works
+  is that a detour factor is close to constant within a city, and a constant
+  multiplier cannot reorder a ranking.
+
+  What you give up is the minutes themselves: they carry a few percent of error
+  (mean ~5%, worst case ~19% in testing). Every surface that shows an estimated
+  commute labels it `approx.`, and the CSV column is named `..._min_approx` so
+  the caveat survives into a file you send to someone else.
+
+  Good for tuning weights, comparing shortlists quickly, or running without
+  waiting. Use `"network"` when you want the commute figure itself to be right.
+
+- **`detour_factor`** — Used only by `"straight_line"`: how much longer a real
+  route is than the straight line between its endpoints. It does **not** affect
+  the ranking — a constant cannot reorder anything — so it only decides whether
+  the displayed minutes are honest and which candidates fall past
+  `commute_cap_min`.
+
+  Street layout drives this more than city size does. Measured medians:
+  Washington DC 1.11 (a grid), Berlin 1.215, Lisbon 1.242, Budapest 1.347
+  (organic centres). The default 1.25 is the median of those. If your commute
+  figures look consistently long or short against a route you know, this is the
+  dial — a grid city wants ~1.1, a medieval core ~1.35. Setting it too high is
+  worse than too low, because it pushes candidates past the commute cap that
+  had not really reached it.
 
 ### Configuration is validated before anything runs
 

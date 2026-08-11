@@ -29,12 +29,15 @@ from .config import (
 from .osm import DEFAULT_POI_DEDUPE_TOLERANCE_M
 from .routing import (
     DEFAULT_CYCLING_SPEED_M_PER_MIN,
+    DEFAULT_DETOUR_FACTOR,
+    DEFAULT_ROUTING_MODE,
     DEFAULT_TRAVEL_MODE,
     DEFAULT_WALKING_SPEED_M_PER_MIN,
     TRAVEL_MODES,
     commute_column,
     nearest_node,
     route_time,
+    straight_line_time,
 )
 from .scoring import (
     DEFAULT_COMMUTE_CAP_MIN,
@@ -105,6 +108,10 @@ class FlatScorer:
         self.saturation = dict(DEFAULT_SATURATION, **self.params.get("saturation", {}))
         self.configured_crs = self.params.get("projected_crs", "auto")
         self.show_walk_routes = self.params.get("show_walk_routes", True)
+        # "network" routes over a downloaded street network; "straight_line"
+        # skips that download entirely. See ROUTING_MODES for the bargain.
+        self.routing_mode = self.params.get("routing_mode", DEFAULT_ROUTING_MODE)
+        self.detour_factor = self.params.get("detour_factor", DEFAULT_DETOUR_FACTOR)
 
         # Populated by run(): (name, address) pairs that failed to geocode and
         # were therefore dropped from the ranking. Callers (e.g. the GUI) read
@@ -126,7 +133,10 @@ class FlatScorer:
         rather than letting the bar stop short.
         """
         destinations = [d for d in self.destinations_config.values() if isinstance(d, dict)]
-        modes = {destination_mode(d) for d in destinations}
+        # No graph is downloaded in straight-line mode, so budgeting for one
+        # would park the bar at the step that no longer exists - and the graph
+        # download is by far the heaviest weight in the table.
+        modes = set() if self.routing_mode == "straight_line" else {destination_mode(d) for d in destinations}
         return (PROGRESS_WEIGHTS["geocode"] * (len(self.candidates_raw) + len(destinations))
                 + PROGRESS_WEIGHTS["graph"] * len(modes)
                 + PROGRESS_WEIGHTS["pois"]
@@ -373,16 +383,28 @@ class FlatScorer:
             return ox.features_from_bbox(bbox=bbox, tags=tags)
 
         graphs = {}
-        for mode in modes_in_use:
-            spec = TRAVEL_MODES[mode]
-            self._log(f"\nDownloading the {spec['label']} street network from OpenStreetMap...")
-            self._progress_step(f"Downloading the {spec['label']} street network from OpenStreetMap "
-                                "(the slowest step - a minute is normal)...", PROGRESS_WEIGHTS["graph"])
-            # network_type is bound as a default rather than closed over, so the
-            # lambda can't be caught out by the loop variable moving on.
-            graphs[mode] = osm.query_with_retry(
-                lambda network_type=spec["network_type"]: ox.graph_from_bbox(bbox=bbox, network_type=network_type)
-            )
+        approximate = self.routing_mode == "straight_line"
+        if approximate:
+            # The whole point of the mode: the street network is ~80% of a run's
+            # wall clock and ~21 MB of Overpass traffic, and it is being skipped,
+            # not deferred. Say so plainly - a user comparing two runs needs to
+            # know which one measured and which one estimated.
+            if modes_in_use:
+                self._log(f"\nEstimating commutes from straight-line distance x {self.detour_factor:g} "
+                          "- no street network will be downloaded.")
+                self._log("    Commute times are approximate. Ranking is barely affected by this, "
+                          "but the minutes themselves carry a few percent of error.")
+        else:
+            for mode in modes_in_use:
+                spec = TRAVEL_MODES[mode]
+                self._log(f"\nDownloading the {spec['label']} street network from OpenStreetMap...")
+                self._progress_step(f"Downloading the {spec['label']} street network from OpenStreetMap "
+                                    "(the slowest step - a minute is normal)...", PROGRESS_WEIGHTS["graph"])
+                # network_type is bound as a default rather than closed over, so
+                # the lambda can't be caught out by the loop variable moving on.
+                graphs[mode] = osm.query_with_retry(
+                    lambda network_type=spec["network_type"]: ox.graph_from_bbox(bbox=bbox, network_type=network_type)
+                )
         if not modes_in_use:
             self._log("\nNo destinations to route to, so no street network is needed.")
 
@@ -438,7 +460,8 @@ class FlatScorer:
         # different junction in the cycling network. Reusing one across modes
         # produces a plausible commute time rather than an error, so nothing
         # downstream would notice.
-        dest_nodes = {
+        # There are no graphs to look nodes up in when the commute is estimated.
+        dest_nodes = {} if approximate else {
             (dest_modes[dest_name], dest_name): nearest_node(graphs[dest_modes[dest_name]], data["coords"])
             for dest_name, data in resolved_destinations.items()
         }
@@ -468,7 +491,7 @@ class FlatScorer:
             # Per mode for the same reason the destination cache is: this flat's
             # nearest walking junction and nearest cycling junction are different
             # nodes in different graphs.
-            orig_nodes = {mode: nearest_node(graphs[mode], (lat, lon)) for mode in modes_in_use}
+            orig_nodes = {} if approximate else {mode: nearest_node(graphs[mode], (lat, lon)) for mode in modes_in_use}
 
             green_area_m2, green_points = green_area_and_points(lat, lon, green_p, projected_crs, dist=self.buffer_m)
             dist_to_busy_road = nearest_distance_m(lat, lon, roads_p, projected_crs)
@@ -479,12 +502,23 @@ class FlatScorer:
             for dest_name, dest_data in resolved_destinations.items():
                 dest_coords = dest_data["coords"]
                 mode = dest_modes[dest_name]
-                dest_times[dest_name], dest_routes[dest_name] = route_time(
-                    graphs[mode], (lat, lon), dest_coords,
-                    speed_m_per_min=self.mode_speed(mode),
-                    projected_crs=projected_crs,
-                    orig_node=orig_nodes[mode], dest_node=dest_nodes[(mode, dest_name)],
-                )
+                if approximate:
+                    # No route is recorded, so none is drawn. A straight segment
+                    # between two points is not a walkable path, and putting one
+                    # on the map would claim it was.
+                    dest_times[dest_name] = straight_line_time(
+                        (lat, lon), dest_coords,
+                        speed_m_per_min=self.mode_speed(mode),
+                        detour_factor=self.detour_factor,
+                        projected_crs=projected_crs,
+                    )
+                else:
+                    dest_times[dest_name], dest_routes[dest_name] = route_time(
+                        graphs[mode], (lat, lon), dest_coords,
+                        speed_m_per_min=self.mode_speed(mode),
+                        projected_crs=projected_crs,
+                        orig_node=orig_nodes[mode], dest_node=dest_nodes[(mode, dest_name)],
+                    )
             routes_by_candidate[name] = dest_routes
 
             m = {
@@ -515,7 +549,7 @@ class FlatScorer:
             }
 
             for dest_name, mins in dest_times.items():
-                row[commute_column(dest_name, dest_modes[dest_name])] = round(mins, 1)
+                row[commute_column(dest_name, dest_modes[dest_name], self.routing_mode)] = round(mins, 1)
 
             if any_listing_url:
                 row["url"] = candidate_url(info["raw"]) or ""

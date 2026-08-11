@@ -15,10 +15,12 @@ import pandas as pd
 
 from .config import destination_mode
 from .routing import (
+    APPROX_COLUMN_SUFFIX,
     COMMUTE_COLUMN_SUFFIXES,
     DEFAULT_TRAVEL_MODE,
     TRAVEL_MODES,
     commute_column,
+    mode_for_suffix,
 )
 from .scoring import (
     MAP_COLOUR_BANDS,
@@ -99,8 +101,11 @@ def generate_map(df: pd.DataFrame, resolved_destinations: dict[str, Any], html_f
             if suffix is None:
                 continue
             dest_label = col[:-len(suffix)].replace("_", " ").title()
-            verb = next(spec["verb"] for spec in TRAVEL_MODES.values() if suffix == f"_{spec['column_suffix']}")
-            dest_lines.append(f"{dest_label}: {row[col]} min {verb}")
+            verb = TRAVEL_MODES[mode_for_suffix(suffix)]["verb"]
+            # An estimated commute says so where the number is read, not only in
+            # the run log the reader of a saved map never saw.
+            approx = " (approx.)" if suffix.endswith(APPROX_COLUMN_SUFFIX) else ""
+            dest_lines.append(f"{dest_label}: {row[col]} min {verb}{approx}")
         dest_html = " | ".join(dest_lines)
 
         popup = (

@@ -638,3 +638,74 @@ def test_the_theme_hides_the_deploy_button():
     from flatscorer.gui import theme
 
     assert "stAppDeployButton" in theme.CSS
+
+
+def test_the_fast_mode_toggle_reaches_the_built_config():
+    """Tunable in the GUI only if the value actually scores."""
+    from flatscorer.gui import state as gui_state
+
+    app = fresh_app()
+    app.session_state["main_nav_radio"] = WEIGHTS
+    app.run()
+
+    toggle = next(w for w in app.checkbox if "Fast mode" in w.label)
+    toggle.set_value(True).run()
+
+    assert not app.exception, app.exception
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(gui_state.st, "session_state", app.session_state)
+        params = gui_state._build_config()["parameters"]
+
+    assert params["routing_mode"] == "straight_line"
+
+
+def test_fast_mode_is_off_by_default_in_the_gui():
+    """Opt-in, matching DEFAULT_CONFIG - the GUI must not quietly estimate."""
+    from flatscorer.gui import state as gui_state
+
+    app = fresh_app()
+    app.session_state["main_nav_radio"] = WEIGHTS
+    app.run()
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(gui_state.st, "session_state", app.session_state)
+        params = gui_state._build_config()["parameters"]
+
+    assert params["routing_mode"] == "network"
+
+
+def test_the_detour_factor_widget_reaches_the_built_config():
+    from flatscorer.gui import state as gui_state
+
+    app = fresh_app()
+    app.session_state["main_nav_radio"] = WEIGHTS
+    app.run()
+
+    next(w for w in app.checkbox if "Fast mode" in w.label).set_value(True).run()
+    next(w for w in app.number_input if "Detour factor" in w.label).set_value(1.45).run()
+
+    assert not app.exception, app.exception
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(gui_state.st, "session_state", app.session_state)
+        params = gui_state._build_config()["parameters"]
+
+    assert params["detour_factor"] == 1.45
+
+
+def test_the_gui_cannot_build_a_config_validate_config_rejects():
+    """The toggle can only produce modes the engine accepts."""
+    import flatscorer as fs
+    from flatscorer.gui import state as gui_state
+
+    app = fresh_app()
+    app.session_state["main_nav_radio"] = WEIGHTS
+    app.run()
+    next(w for w in app.checkbox if "Fast mode" in w.label).set_value(True).run()
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(gui_state.st, "session_state", app.session_state)
+        config = gui_state._build_config()
+
+    assert config["parameters"]["routing_mode"] in fs.ROUTING_MODES

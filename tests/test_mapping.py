@@ -101,3 +101,27 @@ def test_the_map_popup_has_no_link_line_without_a_url(tmp_path):
     out = tmp_path / "map.html"
     make_scorer().generate_map(map_frame([8.0]), {}, str(out))
     assert "View listing" not in out.read_text()
+
+
+def test_the_popup_marks_an_approximate_commute(tmp_path):
+    """A saved map outlives its run log, so the caveat belongs on the number."""
+    frame = map_frame([8.0])
+    frame["work_walk_min_approx"] = 12.3
+    out = tmp_path / "map.html"
+    make_scorer().generate_map(frame, {}, str(out))
+
+    html = out.read_text()
+    assert "12.3 min walk (approx.)" in html
+    # The destination label must survive the longer suffix intact.
+    assert "Work Approx" not in html
+
+
+def test_the_popup_leaves_a_routed_commute_unmarked(tmp_path):
+    frame = map_frame([8.0])
+    frame["work_walk_min"] = 12.3
+    out = tmp_path / "map.html"
+    make_scorer().generate_map(frame, {}, str(out))
+
+    html = out.read_text()
+    assert "12.3 min walk" in html
+    assert "approx." not in html

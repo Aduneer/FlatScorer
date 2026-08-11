@@ -283,3 +283,36 @@ def test_config_error_carries_and_renders_every_problem():
 def test_config_error_is_a_value_error():
     """The GUI catches broad Exception; the CLI and tests rely on ValueError."""
     assert issubclass(fs.ConfigError, ValueError)
+
+
+# --- routing_mode / detour_factor -------------------------------------------
+
+
+def test_an_unknown_routing_mode_is_rejected():
+    """Caught before the download, since it decides whether to download at all."""
+    problem = only_problem(valid_config(parameters={"routing_mode": "as_the_crow_flies"}))
+    assert "routing_mode" in problem
+    assert "straight_line" in problem and "network" in problem
+
+
+@pytest.mark.parametrize("mode", ["network", "straight_line"])
+def test_both_routing_modes_are_accepted(mode):
+    assert fs.validate_config(valid_config(parameters={"routing_mode": mode})) == []
+
+
+def test_a_detour_factor_below_one_is_rejected():
+    """A real path is never shorter than the straight line between its ends."""
+    problem = only_problem(valid_config(parameters={"detour_factor": 0.8}))
+    assert "detour_factor" in problem
+    assert "at least 1" in problem
+
+
+def test_a_non_numeric_detour_factor_is_rejected():
+    problem = only_problem(valid_config(parameters={"detour_factor": "brisk"}))
+    assert "detour_factor" in problem
+    assert "must be a number" in problem
+
+
+def test_a_detour_factor_of_exactly_one_is_allowed():
+    """Pure straight-line distance is a meaningful choice, not an error."""
+    assert fs.validate_config(valid_config(parameters={"detour_factor": 1.0})) == []

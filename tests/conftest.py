@@ -128,9 +128,14 @@ def offline_run(monkeypatch, tmp_path):
             }
         # run() downloads one graph per travel mode present in `destinations`, in
         # first-mentioned order, and then the POIs - so the queue has to match.
+        # `routing_mode="straight_line"` downloads no graph at all, and an
+        # unconsumed graph left in the queue would be handed to the POI call
+        # instead, which fails somewhere far away from the cause.
         modes = list(dict.fromkeys(
             fs.destination_mode(info) for info in config.get("destinations", {}).values()
         ))
+        if config.get("parameters", {}).get("routing_mode") == "straight_line":
+            modes = []
         responses[:] = [(graphs or {}).get(mode) or chain_graph() for mode in modes]
         responses.append(gpd.GeoDataFrame())
         return fs.FlatScorer(config, verbose=False, progress=progress).run()

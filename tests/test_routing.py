@@ -8,9 +8,11 @@ from __future__ import annotations
 
 import networkx as nx
 import osmnx as ox
+import pandas as pd
 import pytest
 from conftest import (
     BERLIN_CRS,
+    CHAIN_COORDS,
     bike_graph,
     mixed_mode_config,
     one_destination_config,
@@ -271,3 +273,122 @@ def test_a_mixed_map_names_its_route_layer_for_both_modes(offline_run, tmp_path)
     assert "Predicted walking routes" in walk_only
     assert "Predicted commute routes" in mixed
     assert "Predicted walking routes" not in mixed
+
+
+# --- routing_mode: estimating a commute instead of routing one ---------------
+#
+# The measured case for this mode is written up in TODO.md's `feat/routing-mode`
+# entry: across three cities the ranking barely moved, so what these tests pin
+# is that the *mechanism* is right - no download, honest column names, and the
+# network path untouched.
+
+
+def test_straight_line_time_applies_the_detour_factor():
+    """1000 m apart on the chain graph, at the default walking pace."""
+    orig, dest = CHAIN_COORDS["1 Main St"], CHAIN_COORDS["2 Office Rd"]
+    speed = fs.DEFAULT_WALKING_SPEED_M_PER_MIN
+
+    plain = fs.straight_line_time(orig, dest, speed_m_per_min=speed, detour_factor=1.0,
+                                  projected_crs=BERLIN_CRS)
+    detoured = fs.straight_line_time(orig, dest, speed_m_per_min=speed, detour_factor=1.5,
+                                     projected_crs=BERLIN_CRS)
+
+    # ~687 m east-west at 52°N, so the absolute value is a projection fact; the
+    # relationship is the thing being asserted.
+    assert detoured == pytest.approx(plain * 1.5)
+    assert plain == pytest.approx(
+        fs.straight_line_distance_m(orig, dest, BERLIN_CRS) / speed)
+
+
+def test_an_approximate_commute_column_says_so():
+    """The caveat has to survive into a CSV mailed to someone else."""
+    assert fs.commute_column("Near Office", "walk", "network") == "near_office_walk_min"
+    assert fs.commute_column("Near Office", "walk", "straight_line") == "near_office_walk_min_approx"
+    assert fs.commute_column("Near Office", "bike", "straight_line") == "near_office_bike_min_approx"
+    # The default has to stay the routed name, or every existing config's CSV
+    # changes shape.
+    assert fs.commute_column("Near Office") == "near_office_walk_min"
+
+
+def test_a_suffix_resolves_to_its_mode_approximate_or_not():
+    """The map and the report both recover a mode from a column suffix."""
+    assert fs.mode_for_suffix("_walk_min") == "walk"
+    assert fs.mode_for_suffix("_walk_min_approx") == "walk"
+    assert fs.mode_for_suffix("_bike_min_approx") == "bike"
+
+
+def test_every_commute_column_matches_exactly_one_suffix():
+    """What actually protects the destination label, unlike suffix ordering.
+
+    `_walk_min` is a *prefix* of `_walk_min_approx`, not a suffix, so `endswith`
+    separates them on its own. This pins the property the surfaces rely on -
+    exactly one match per column - rather than the ordering, which a mutation
+    test showed to be inert today.
+    """
+    for routing_mode in fs.ROUTING_MODES:
+        for mode in fs.TRAVEL_MODES:
+            col = fs.commute_column("Near Office", mode, routing_mode)
+            matches = [s for s in fs.COMMUTE_COLUMN_SUFFIXES if col.endswith(s)]
+            assert len(matches) == 1, (col, matches)
+            assert col[:-len(matches[0])] == "near_office"
+
+
+def test_straight_line_mode_downloads_no_street_network(run_recording_downloads):
+    """The entire point of the mode: the heaviest Overpass call never happens."""
+    config = one_destination_config(routing_mode="straight_line", detour_factor=1.3)
+    requested, df = run_recording_downloads(config)
+
+    assert requested == []
+    assert "near_office_walk_min_approx" in df.columns
+    assert "near_office_walk_min" not in df.columns
+
+
+def test_network_mode_still_downloads_its_graph(run_recording_downloads):
+    """The control for the test above - the default must be unchanged."""
+    requested, df = run_recording_downloads(one_destination_config())
+
+    assert requested == ["walk"]
+    assert "near_office_walk_min" in df.columns
+
+
+def test_switching_to_straight_line_touches_only_the_commute(offline_run):
+    """The mode must reach the commute and nothing else.
+
+    `score` is expected to move, because the commute it is built from moved.
+    Every *measured* column must not: a changed supermarket count or rent would
+    mean the routing mode had leaked somewhere it has no business being.
+
+    (That `routing_mode="network"` still produces exactly what it produced
+    before this parameter existed is pinned by the rest of the suite, which
+    asserts those columns and values directly and was not edited.)
+    """
+    routed = offline_run(one_destination_config())
+    estimated = offline_run(one_destination_config(routing_mode="straight_line"))
+
+    assert list(estimated.columns) == [
+        c if c != "near_office_walk_min" else "near_office_walk_min_approx"
+        for c in routed.columns
+    ]
+    measured = [c for c in routed.columns if c not in ("score", "near_office_walk_min")]
+    pd.testing.assert_frame_equal(routed[measured], estimated[measured])
+
+
+def test_the_detour_factor_cannot_reorder_candidates(offline_run):
+    """Measured claim, pinned: a constant multiplier cannot change a ranking.
+
+    This is why TODO.md says not to build per-city calibration. Two runs at
+    factors far apart must rank identically - only the minutes may differ.
+    """
+    low = offline_run(one_destination_config(routing_mode="straight_line", detour_factor=1.05))
+    high = offline_run(one_destination_config(routing_mode="straight_line", detour_factor=1.9))
+
+    assert list(low["name"]) == list(high["name"])
+    assert (low["near_office_walk_min_approx"] < high["near_office_walk_min_approx"]).all()
+
+
+def test_the_shipped_default_is_still_network_routing():
+    """Fast mode is opt-in. An existing config must not silently start estimating."""
+    assert fs.DEFAULT_ROUTING_MODE == "network"
+    assert fs.DEFAULT_CONFIG["parameters"]["routing_mode"] == "network"
+    assert fs.DEFAULT_CONFIG["parameters"]["detour_factor"] == fs.DEFAULT_DETOUR_FACTOR
+    assert fs.DEFAULT_DETOUR_FACTOR >= 1.0

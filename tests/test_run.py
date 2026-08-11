@@ -20,6 +20,7 @@ from conftest import (
 
 import flatscorer as fs
 from flatscorer import geocode
+from flatscorer import scorer as fs_scorer
 
 # ------------------------------------------------------- destination node cache --
 
@@ -319,3 +320,28 @@ def test_an_explicit_overview_path_still_wins(offline_run, tmp_path):
     offline_run(config, override_output=False)
 
     assert target.is_file()
+
+
+def test_straight_line_mode_never_announces_a_street_network_download(offline_run):
+    """The bar must not budget for a step that no longer happens.
+
+    `graph` is the heaviest entry in PROGRESS_WEIGHTS by a wide margin, so
+    leaving it in the plan would park the bar partway and then jump - the exact
+    failure the weighted plan exists to avoid.
+    """
+    seen = ProgressLog()
+    offline_run(one_destination_config(routing_mode="straight_line"), progress=seen)
+
+    assert seen.mentioning("street network") == []
+    assert seen.fractions == sorted(seen.fractions)
+    assert seen.fractions[-1] == pytest.approx(1.0)
+
+
+def test_the_progress_plan_drops_the_graph_weight_in_straight_line_mode():
+    """Pins the plan itself, not just the labels: the total has to shrink."""
+    routed = fs.FlatScorer(one_destination_config(), verbose=False)
+    estimated = fs.FlatScorer(one_destination_config(routing_mode="straight_line"), verbose=False)
+
+    assert estimated._plan_progress() < routed._plan_progress()
+    assert routed._plan_progress() - estimated._plan_progress() == pytest.approx(
+        fs_scorer.PROGRESS_WEIGHTS["graph"])

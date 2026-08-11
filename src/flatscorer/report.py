@@ -23,7 +23,12 @@ from typing import Any
 
 import pandas as pd
 
-from .routing import COMMUTE_COLUMN_SUFFIXES, TRAVEL_MODES
+from .routing import (
+    APPROX_COLUMN_SUFFIX,
+    COMMUTE_COLUMN_SUFFIXES,
+    TRAVEL_MODES,
+    mode_for_suffix,
+)
 from .scoring import SCORE_SCALE_MAX, score_colour
 
 # The human wording for each breakdown key. Destination terms are keyed
@@ -222,9 +227,11 @@ def _commute_chips(row: pd.Series, columns: Any) -> list[str]:
         if suffix is None:
             continue
         label = col[:-len(suffix)].replace("_", " ").title()
-        verb = next(spec["verb"] for spec in TRAVEL_MODES.values()
-                    if suffix == f"_{spec['column_suffix']}")
-        chips.append(f"{html.escape(label)} <strong>{row[col]} min</strong> {html.escape(verb)}")
+        verb = TRAVEL_MODES[mode_for_suffix(suffix)]["verb"]
+        # The report is the surface most likely to be read on its own, so an
+        # estimated commute is marked on the chip itself.
+        approx = " (approx.)" if suffix.endswith(APPROX_COLUMN_SUFFIX) else ""
+        chips.append(f"{html.escape(label)} <strong>{row[col]} min</strong> {html.escape(verb)}{approx}")
     return chips
 
 

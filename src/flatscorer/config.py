@@ -19,8 +19,11 @@ from . import paths
 from .osm import DEFAULT_POI_DEDUPE_TOLERANCE_M
 from .routing import (
     DEFAULT_CYCLING_SPEED_M_PER_MIN,
+    DEFAULT_DETOUR_FACTOR,
+    DEFAULT_ROUTING_MODE,
     DEFAULT_TRAVEL_MODE,
     DEFAULT_WALKING_SPEED_M_PER_MIN,
+    ROUTING_MODES,
     TRAVEL_MODES,
 )
 from .scoring import (
@@ -85,7 +88,9 @@ DEFAULT_CONFIG = {
         "max_bbox_span_km": DEFAULT_MAX_BBOX_SPAN_KM,
         "saturation": dict(DEFAULT_SATURATION),
         "projected_crs": "auto",
-        "show_walk_routes": True
+        "show_walk_routes": True,
+        "routing_mode": DEFAULT_ROUTING_MODE,
+        "detour_factor": DEFAULT_DETOUR_FACTOR
     },
     # Written out explicitly rather than left to the defaults in `paths`, so a
     # generated config shows where its results will land and can be pointed
@@ -337,6 +342,26 @@ def validate_config(config: Any) -> list[str]:
                 problems.append(f"parameters['poi_dedupe_tolerance_m']: must be a number, got {params['poi_dedupe_tolerance_m']!r}")
             elif tolerance < 0:
                 problems.append(f"parameters['poi_dedupe_tolerance_m']: cannot be negative, got {tolerance:g}")
+
+        # Caught here rather than at the routing call, because the whole point of
+        # this check is to fail before the download it is deciding whether to do.
+        if "routing_mode" in params and params["routing_mode"] not in ROUTING_MODES:
+            problems.append(
+                f"parameters['routing_mode']: must be one of {', '.join(ROUTING_MODES)}, "
+                f"got {params['routing_mode']!r}"
+            )
+
+        # A real path is never shorter than the straight line between its ends,
+        # so a factor below 1 understates every commute in the run. Almost
+        # certainly a typo, and an expensive one - it moves candidates to the
+        # wrong side of commute_cap_min.
+        if "detour_factor" in params:
+            factor = _as_number(params["detour_factor"])
+            if factor is None:
+                problems.append(f"parameters['detour_factor']: must be a number, got {params['detour_factor']!r}")
+            elif factor < 1:
+                problems.append(f"parameters['detour_factor']: must be at least 1, got {factor:g} "
+                                "(a walked route cannot be shorter than the straight line)")
 
         saturation = params.get("saturation", {})
         if not isinstance(saturation, dict):

@@ -62,7 +62,9 @@
       "green": 30
     },
     "projected_crs": "auto",
-    "show_walk_routes": true
+    "show_walk_routes": true,
+    "routing_mode": "network",
+    "detour_factor": 1.25
   },
   "output": {
     "csv_file": "output/apartment_scores.csv",

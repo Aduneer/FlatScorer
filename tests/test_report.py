@@ -294,3 +294,18 @@ def test_the_report_writes_the_file_and_logs_where(tmp_path):
                            str(out), None, log=lines.append)
     assert out.is_file()
     assert any(str(out) in line for line in lines)
+
+
+def test_an_approximate_commute_is_marked_on_its_chip(tmp_path):
+    """The report travels on its own, so the caveat has to travel with it."""
+    df = sample_frame().rename(columns={"Work_walk_min": "Work_walk_min_approx"})
+    page = render(tmp_path, df=df)
+
+    assert "(approx.)" in page
+    # The destination label must survive the longer suffix intact.
+    assert "Work Approx" not in page
+    assert ">Work " in page or "Work <strong>" in page
+
+
+def test_a_routed_commute_carries_no_approximate_marker(tmp_path):
+    assert "(approx.)" not in render(tmp_path)
