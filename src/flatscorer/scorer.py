@@ -571,7 +571,13 @@ class FlatScorer:
         self.log_score_breakdown(breakdowns)
 
         csv_file = paths.ensure_parent(self.output_config.get("csv_file", paths.output_path("apartment_scores.csv")))
-        df.to_csv(csv_file, index=False)
+        # A leading `#` comment carries the ODbL credit with the file itself.
+        # `pandas.read_csv(..., comment="#")` skips it and every spreadsheet shows
+        # it as a harmless first row - a cost worth paying so a CSV forwarded on
+        # its own still says where the data came from.
+        with open(csv_file, "w", encoding="utf-8", newline="") as handle:
+            handle.write(f"# {osm.OSM_ATTRIBUTION_TEXT}\n")
+            df.to_csv(handle, index=False)
         self._log(f"\n[+] Saved score table to {csv_file}")
 
         self.run_sensitivity_check(metrics_by_name)

@@ -253,7 +253,7 @@ instead of being rebuilt per working directory.
 | Artifact | Description |
 |---|---|
 | Terminal table | Ranked summary printed to stdout |
-| `output/apartment_scores.csv` | Full metrics for every candidate |
+| `output/apartment_scores.csv` | Full metrics for every candidate. The first line is an OpenStreetMap credit comment — read it with `pd.read_csv(path, comment="#")` |
 | `output/apartment_map.html` | Interactive Folium map with color-coded pins and predicted commute routes |
 | `output/apartment_overview.html` | One card per flat showing what each criterion contributed to its score — self-contained, opens offline, sendable |
 | Sensitivity report | ±20% weight perturbation check on ranking stability |

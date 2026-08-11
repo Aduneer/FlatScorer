@@ -8,6 +8,7 @@ quietly unmet again.
 
 from __future__ import annotations
 
+import threading
 import time
 
 import osmnx as ox
@@ -34,13 +35,26 @@ GEOCODE_BACKOFF_S = 2.0
 _last_geocode_at = 0.0
 
 
+# Held across the wait, not just around the timestamp. Streamlit runs every
+# session's script in its own thread, so two browser tabs scoring at once are two
+# threads in this function - and read-then-sleep-then-write let all of them
+# compute their wait against the *same* stale timestamp and fire together. That
+# measured as four requests in the same instant against a policy whose words are
+# "an absolute maximum of 1 request per second".
+#
+# Serializing here is the intended behaviour, not a cost: the limit is global to
+# the application, so callers queuing behind each other is exactly right.
+_geocode_lock = threading.Lock()
+
+
 def _throttle_geocode():
     """Block until at least NOMINATIM_MIN_INTERVAL_S has passed since the last geocode."""
     global _last_geocode_at
-    wait = NOMINATIM_MIN_INTERVAL_S - (time.monotonic() - _last_geocode_at)
-    if wait > 0:
-        time.sleep(wait)
-    _last_geocode_at = time.monotonic()
+    with _geocode_lock:
+        wait = NOMINATIM_MIN_INTERVAL_S - (time.monotonic() - _last_geocode_at)
+        if wait > 0:
+            time.sleep(wait)
+        _last_geocode_at = time.monotonic()
 
 
 def geocode_safe(address: str, label: str, attempts: int = GEOCODE_ATTEMPTS) -> tuple[float, float] | None:

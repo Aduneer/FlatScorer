@@ -75,3 +75,37 @@ def test_geocode_calls_are_spaced_to_respect_the_nominatim_policy(monkeypatch):
 
     assert slept[0] == pytest.approx(fs.NOMINATIM_MIN_INTERVAL_S)
     assert slept[1] == pytest.approx(0.75)
+
+
+def test_the_nominatim_throttle_holds_across_threads():
+    """Streamlit runs every session's script in its own thread.
+
+    Read-then-sleep-then-write let concurrent callers all measure their wait
+    against the same stale timestamp and fire together - four requests in one
+    instant against a policy whose words are "an absolute maximum of 1 request
+    per second". The lock is what makes the limit global rather than per-thread.
+    """
+    import threading
+    import time
+
+    from flatscorer import geocode
+
+    geocode._last_geocode_at = 0.0
+    fired: list[float] = []
+    barrier = threading.Barrier(4)
+
+    def slot():
+        barrier.wait()  # maximise the overlap rather than hoping for it
+        geocode._throttle_geocode()
+        fired.append(time.monotonic())
+
+    threads = [threading.Thread(target=slot) for _ in range(4)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+
+    fired.sort()
+    gaps = [b - a for a, b in zip(fired, fired[1:])]
+    assert len(gaps) == 3
+    assert all(gap >= geocode.NOMINATIM_MIN_INTERVAL_S * 0.98 for gap in gaps), gaps

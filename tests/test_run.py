@@ -93,14 +93,14 @@ def test_a_listing_url_reaches_the_score_table_and_the_csv(offline_run, tmp_path
          "url": "https://example.com/expose/1"},
     ]))
     assert df.set_index("name").loc["Flat A", "url"] == "https://example.com/expose/1"
-    assert pd.read_csv(tmp_path / "scores.csv").loc[0, "url"] == "https://example.com/expose/1"
+    assert pd.read_csv(tmp_path / "scores.csv", comment="#").loc[0, "url"] == "https://example.com/expose/1"
 
 
 def test_a_run_with_no_listing_urls_has_no_url_column_at_all(offline_run, tmp_path):
     """Configs predating the field must produce exactly the output they used to."""
     df = offline_run(valid_config())
     assert "url" not in df.columns
-    assert "url" not in pd.read_csv(tmp_path / "scores.csv").columns
+    assert "url" not in pd.read_csv(tmp_path / "scores.csv", comment="#").columns
 
 
 def test_a_candidate_without_a_link_is_blank_rather_than_missing(offline_run, tmp_path):
@@ -112,7 +112,7 @@ def test_a_candidate_without_a_link_is_blank_rather_than_missing(offline_run, tm
     urls = df.set_index("name")["url"]
     assert urls["Flat A"] == "https://example.com/a"
     assert urls["Flat B"] == ""
-    assert pd.isna(pd.read_csv(tmp_path / "scores.csv").set_index("name").loc["Flat B", "url"])
+    assert pd.isna(pd.read_csv(tmp_path / "scores.csv", comment="#").set_index("name").loc["Flat B", "url"])
 
 
 def test_the_node_cache_does_not_change_the_commute_times(monkeypatch, offline_run):
@@ -345,3 +345,59 @@ def test_the_progress_plan_drops_the_graph_weight_in_straight_line_mode():
     assert estimated._plan_progress() < routed._plan_progress()
     assert routed._plan_progress() - estimated._plan_progress() == pytest.approx(
         fs_scorer.PROGRESS_WEIGHTS["graph"])
+
+
+# ------------------------------------------------------------ CSV attribution --
+
+
+def test_the_csv_carries_its_openstreetmap_credit(offline_run, tmp_path):
+    """ODbL wants a Produced Work to credit its source, and the CSV is the
+    artifact most likely to be forwarded on its own - so the notice has to travel
+    in the file, not just in the map and the report."""
+    offline_run(one_destination_config())
+    first_line = (tmp_path / "scores.csv").read_text(encoding="utf-8").splitlines()[0]
+
+    assert first_line.startswith("#")
+    assert "OpenStreetMap" in first_line
+    assert "ODbL" in first_line
+    assert "openstreetmap.org/copyright" in first_line
+
+
+def test_the_credited_csv_still_parses_as_a_csv(offline_run, tmp_path):
+    """The cost of the comment line, pinned: it must skip cleanly and change
+    nothing about the data underneath it."""
+    df = offline_run(one_destination_config())
+    parsed = pd.read_csv(tmp_path / "scores.csv", comment="#")
+
+    assert list(parsed.columns) == list(df.columns)
+    assert len(parsed) == len(df)
+    assert parsed.loc[0, "name"] == df.iloc[0]["name"]
+    assert parsed.loc[0, "score"] == pytest.approx(df.iloc[0]["score"])
+
+
+def test_the_credit_is_one_line_and_the_header_follows_it(offline_run, tmp_path):
+    """Exactly one comment line - a reader doing `skiprows=1` must also work."""
+    offline_run(one_destination_config())
+    lines = (tmp_path / "scores.csv").read_text(encoding="utf-8").splitlines()
+
+    assert len([ln for ln in lines if ln.startswith("#")]) == 1
+    assert lines[1].startswith("name,score,")
+
+
+def test_the_credit_line_contains_no_comma():
+    """The credit is the CSV's first line, so a reader who forgets `comment="#"`
+    parses it as the header. Comma-free keeps that misparse to a single column
+    named after the notice itself, which explains itself; a comma splits it into
+    two columns for no benefit."""
+    assert "," not in fs_scorer.osm.OSM_ATTRIBUTION_TEXT
+
+
+def test_forgetting_the_comment_argument_misparses_conspicuously(offline_run, tmp_path):
+    """Pandas does not raise here - it absorbs the surplus fields into a
+    MultiIndex - so the property worth pinning is that the wrongness announces
+    its own cause rather than looking like data."""
+    offline_run(one_destination_config())
+    naive = pd.read_csv(tmp_path / "scores.csv")
+
+    assert naive.shape[1] == 1
+    assert "OpenStreetMap" in naive.columns[0]
