@@ -64,7 +64,8 @@
     "projected_crs": "auto",
     "show_walk_routes": true,
     "routing_mode": "network",
-    "detour_factor": 1.25
+    "detour_factor": 1.25,
+    "nominatim_url": "https://nominatim.openstreetmap.org/"
   },
   "output": {
     "csv_file": "output/apartment_scores.csv",

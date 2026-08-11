@@ -14,11 +14,23 @@ import time
 import osmnx as ox
 from osmnx._errors import InsufficientResponseError
 
-from . import osm as _osm  # noqa: F401  - imported for its osmnx settings side effect
+# Imported for two reasons: the osmnx settings applied at its import (the
+# user-agent, which is what permits talking to Nominatim at all), and
+# `_apply_setting`, which `use_nominatim` uses below.
+from . import osm as _osm
 
 # Nominatim's usage policy caps clients at 1 request/second, and osmnx does not
 # throttle for us: https://operations.osmfoundation.org/policies/nominatim/
 NOMINATIM_MIN_INTERVAL_S = 1.0
+
+
+# The public instance, and the default. Configurable because the same policy
+# requires it: "apps must make sure that they can switch the service at our
+# request at any time (in particular, switching should be possible without
+# requiring a software update)". A hard-coded endpoint cannot honour that, and
+# the OSMF's ability to shed load from a misbehaving client should not depend on
+# us shipping a release.
+DEFAULT_NOMINATIM_URL = "https://nominatim.openstreetmap.org/"
 
 
 # Geocoding, like Overpass, fails transiently. Retry a couple of times before
@@ -55,6 +67,18 @@ def _throttle_geocode():
         if wait > 0:
             time.sleep(wait)
         _last_geocode_at = time.monotonic()
+
+
+def use_nominatim(url: str = DEFAULT_NOMINATIM_URL):
+    """Point geocoding at a Nominatim instance, for the rest of the process.
+
+    Deliberately *not* saved and restored around each call, unlike
+    `osm.query_with_retry`'s handling of `overpass_url`. That dance exists to
+    stop a mirror chosen mid-run leaking into later runs; here every run applies
+    its own configured value before geocoding anything - the default included -
+    so there is no path by which a stale endpoint survives into the next run.
+    """
+    _osm._apply_setting("nominatim_url", url)
 
 
 def geocode_safe(address: str, label: str, attempts: int = GEOCODE_ATTEMPTS) -> tuple[float, float] | None:

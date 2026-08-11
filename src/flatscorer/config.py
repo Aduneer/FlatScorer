@@ -16,6 +16,7 @@ import math
 from typing import Any
 
 from . import paths
+from .geocode import DEFAULT_NOMINATIM_URL
 from .osm import DEFAULT_POI_DEDUPE_TOLERANCE_M
 from .routing import (
     DEFAULT_CYCLING_SPEED_M_PER_MIN,
@@ -90,7 +91,8 @@ DEFAULT_CONFIG = {
         "projected_crs": "auto",
         "show_walk_routes": True,
         "routing_mode": DEFAULT_ROUTING_MODE,
-        "detour_factor": DEFAULT_DETOUR_FACTOR
+        "detour_factor": DEFAULT_DETOUR_FACTOR,
+        "nominatim_url": DEFAULT_NOMINATIM_URL
     },
     # Written out explicitly rather than left to the defaults in `paths`, so a
     # generated config shows where its results will land and can be pointed
@@ -362,6 +364,18 @@ def validate_config(config: Any) -> list[str]:
             elif factor < 1:
                 problems.append(f"parameters['detour_factor']: must be at least 1, got {factor:g} "
                                 "(a walked route cannot be shorter than the straight line)")
+
+        # An endpoint that isn't http(s) fails deep inside osmnx, mid-run, after
+        # the config was declared valid - so it is caught here like every other
+        # thing that can be known offline.
+        if "nominatim_url" in params:
+            url = params["nominatim_url"]
+            if not isinstance(url, str) or not url.strip():
+                problems.append(f"parameters['nominatim_url']: must be a string holding the "
+                                f"geocoding endpoint, got {url!r}")
+            elif not url.strip().lower().startswith(("http://", "https://")):
+                problems.append(f"parameters['nominatim_url']: must start with http:// or https://, "
+                                f"got {url!r}")
 
         saturation = params.get("saturation", {})
         if not isinstance(saturation, dict):

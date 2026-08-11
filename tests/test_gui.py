@@ -709,3 +709,23 @@ def test_the_gui_cannot_build_a_config_validate_config_rejects():
         config = gui_state._build_config()
 
     assert config["parameters"]["routing_mode"] in fs.ROUTING_MODES
+
+
+def test_the_geocoding_endpoint_widget_reaches_the_built_config():
+    """Configurable in the GUI too — the policy clause is about the app, not the CLI."""
+    from flatscorer.gui import state as gui_state
+
+    app = fresh_app()
+    app.session_state["main_nav_radio"] = WEIGHTS
+    app.run()
+
+    field = next(w for w in app.text_input if "Geocoding service" in w.label)
+    field.set_value("https://nominatim.example.org/").run()
+
+    assert not app.exception, app.exception
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(gui_state.st, "session_state", app.session_state)
+        params = gui_state._build_config()["parameters"]
+
+    assert params["nominatim_url"] == "https://nominatim.example.org/"

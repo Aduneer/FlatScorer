@@ -26,6 +26,7 @@ from .config import (
     destination_mode,
     validate_config,
 )
+from .geocode import DEFAULT_NOMINATIM_URL
 from .osm import DEFAULT_POI_DEDUPE_TOLERANCE_M
 from .routing import (
     DEFAULT_CYCLING_SPEED_M_PER_MIN,
@@ -112,6 +113,9 @@ class FlatScorer:
         # skips that download entirely. See ROUTING_MODES for the bargain.
         self.routing_mode = self.params.get("routing_mode", DEFAULT_ROUTING_MODE)
         self.detour_factor = self.params.get("detour_factor", DEFAULT_DETOUR_FACTOR)
+        # Nominatim's policy requires that the service can be switched without a
+        # software update, which a hard-coded endpoint cannot honour.
+        self.nominatim_url = self.params.get("nominatim_url", DEFAULT_NOMINATIM_URL)
 
         # Populated by run(): (name, address) pairs that failed to geocode and
         # were therefore dropped from the ranking. Callers (e.g. the GUI) read
@@ -291,6 +295,10 @@ class FlatScorer:
         self._progress_total = self._plan_progress()
         self._progress_done = 0.0
         self._progress_pending = 0.0
+
+        # Applied once, before anything is geocoded, so both loops below and the
+        # default case all go to the configured instance.
+        geocode.use_nominatim(self.nominatim_url)
 
         self._log("Geocoding candidate apartment addresses...")
         self.failed_candidates = []

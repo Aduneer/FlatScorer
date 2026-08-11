@@ -316,3 +316,20 @@ def test_a_non_numeric_detour_factor_is_rejected():
 def test_a_detour_factor_of_exactly_one_is_allowed():
     """Pure straight-line distance is a meaningful choice, not an error."""
     assert fs.validate_config(valid_config(parameters={"detour_factor": 1.0})) == []
+
+
+def test_a_non_http_geocoding_endpoint_is_rejected():
+    """Caught offline; otherwise it fails deep inside osmnx, mid-run."""
+    problem = only_problem(valid_config(parameters={"nominatim_url": "nominatim.example.org"}))
+    assert "nominatim_url" in problem
+    assert "http://" in problem
+
+
+def test_an_empty_geocoding_endpoint_is_rejected():
+    problem = only_problem(valid_config(parameters={"nominatim_url": "   "}))
+    assert "nominatim_url" in problem
+
+
+def test_a_custom_geocoding_endpoint_is_accepted():
+    assert fs.validate_config(valid_config(parameters={
+        "nominatim_url": "https://nominatim.example.org/"})) == []

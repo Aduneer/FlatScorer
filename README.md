@@ -327,7 +327,8 @@ Everything is driven by a single JSON file. Generate a template with
     "projected_crs": "auto",       // auto-detect UTM zone, or e.g. "EPSG:25832"
     "show_walk_routes": true,      // draw predicted commute routes on the map by default
     "routing_mode": "network",     // "network" routes over real streets; "straight_line" estimates
-    "detour_factor": 1.25          // straight_line only: how much longer a real route is
+    "detour_factor": 1.25,         // straight_line only: how much longer a real route is
+    "nominatim_url": "https://nominatim.openstreetmap.org/"  // geocoding service
   },
 
   "output": {
@@ -429,6 +430,14 @@ Everything is driven by a single JSON file. Generate a template with
 
   Good for tuning weights, comparing shortlists quickly, or running without
   waiting. Use `"network"` when you want the commute figure itself to be right.
+
+- **`nominatim_url`** — The geocoding service that turns addresses into
+  coordinates. Defaults to the public OpenStreetMap instance; point it at your
+  own Nominatim if you run one. It is configurable because Nominatim's usage
+  policy requires that an application be able to switch service *without
+  shipping a new version* — so the endpoint cannot be hard-coded. FlatScorer
+  also throttles itself to the policy's 1 request per second and identifies
+  itself by name in the `User-Agent`.
 
 - **`detour_factor`** — Used only by `"straight_line"`: how much longer a real
   route is than the straight line between its endpoints. It does **not** affect

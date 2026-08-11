@@ -109,3 +109,48 @@ def test_the_nominatim_throttle_holds_across_threads():
     gaps = [b - a for a, b in zip(fired, fired[1:])]
     assert len(gaps) == 3
     assert all(gap >= geocode.NOMINATIM_MIN_INTERVAL_S * 0.98 for gap in gaps), gaps
+
+
+# --- configurable endpoint ---------------------------------------------------
+#
+# Nominatim's policy: "apps must make sure that they can switch the service at
+# our request at any time (in particular, switching should be possible without
+# requiring a software update)". A hard-coded endpoint cannot honour that.
+
+
+def test_the_geocoding_endpoint_is_configurable():
+    import osmnx as ox
+
+    from flatscorer import geocode
+
+    try:
+        geocode.use_nominatim("https://nominatim.example.org/")
+        assert ox.settings.nominatim_url == "https://nominatim.example.org/"
+    finally:
+        geocode.use_nominatim()
+    assert ox.settings.nominatim_url == geocode.DEFAULT_NOMINATIM_URL
+
+
+def test_a_run_applies_its_configured_endpoint(offline_run):
+    """It has to reach the engine, not just validate - so drive a whole run."""
+    import osmnx as ox
+    from conftest import one_destination_config
+
+    try:
+        offline_run(one_destination_config(nominatim_url="https://geocoder.example.org/"))
+        assert ox.settings.nominatim_url == "https://geocoder.example.org/"
+    finally:
+        from flatscorer import geocode
+        geocode.use_nominatim()
+
+
+def test_a_run_without_the_parameter_uses_the_public_instance(offline_run):
+    """No stale endpoint may survive from a previous run - every run sets one."""
+    import osmnx as ox
+    from conftest import one_destination_config
+
+    from flatscorer import geocode
+
+    geocode.use_nominatim("https://leftover.example.org/")
+    offline_run(one_destination_config())
+    assert ox.settings.nominatim_url == geocode.DEFAULT_NOMINATIM_URL

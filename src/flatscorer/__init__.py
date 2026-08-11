@@ -66,6 +66,8 @@ _EXPORTS = {
     "DEFAULT_TRAVEL_MODE": "routing",
     "DEFAULT_WALKING_SPEED_M_PER_MIN": "routing",
     "DEFAULT_CYCLING_SPEED_M_PER_MIN": "routing",
+    "DEFAULT_NOMINATIM_URL": "geocode",
+    "use_nominatim": "geocode",
     "ROUTING_MODES": "routing",
     "DEFAULT_ROUTING_MODE": "routing",
     "DEFAULT_DETOUR_FACTOR": "routing",

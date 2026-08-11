@@ -225,6 +225,15 @@ def render():
              "Has no effect in fast mode, which measures no routes to draw.",
     )
 
+    st.session_state.params["nominatim_url"] = st.text_input(
+        "Geocoding service (Nominatim)",
+        value=st.session_state.params.get("nominatim_url", DEFAULT_PARAMS["nominatim_url"]),
+        help="Where addresses are turned into coordinates. The public OpenStreetMap instance is "
+             "the default; point this at your own Nominatim if you run one. It is configurable "
+             "because Nominatim's usage policy requires that the service can be switched without "
+             "shipping a new version of the software.",
+    )
+
     st.divider()
     st.markdown("**How commutes are measured**")
     r1, r2 = st.columns(2)
