@@ -273,6 +273,19 @@ def test_the_exact_numbers_table_is_present_but_collapsed(tmp_path):
     assert ">lat<" not in page
 
 
+def test_osm_attribution_travels_with_the_report(tmp_path):
+    """ODbL obligation, not decoration.
+
+    This file is the one built to be sent to other people, so the notice has to
+    be *in it* - the map gets folium's for free, and the README's does not
+    travel with a detached HTML file.
+    """
+    page = render(tmp_path)
+    assert "OpenStreetMap" in page
+    assert "openstreetmap.org/copyright" in page
+    assert "opendatacommons.org/licenses/odbl/" in page
+
+
 def test_the_report_writes_the_file_and_logs_where(tmp_path):
     lines = []
     out = tmp_path / "sub" / "overview.html"
