@@ -36,43 +36,54 @@ from .scoring import (
 )
 from .spatial import DEFAULT_MAX_BBOX_SPAN_KM
 
-# Default configuration template (Generic demo using Washington, DC landmarks)
+# Default configuration template (generic demo using central Berlin).
+#
+# Berlin rather than a US city because OSM tagging density decides what this
+# demo appears to be worth: the same 500 m radius that finds 9 supermarkets and
+# 9 bakeries in Kreuzberg finds 1 and 3 in central Washington, so the DC demo
+# this replaced understated every amenity term by roughly 5x. See DESIGN.md on
+# the four-city comparison - that is a property of the survey, not of the city.
+#
+# No candidate carries an `image`. Commons has essentially one freely-licensed
+# flat photo worth shipping (the rest of the Berlin housing series is CC BY-SA,
+# which would send an attribution obligation along inside every generated
+# report), so the demo shows the score dial that stands in for a missing photo.
+# The field itself is documented in the README and exercised by the tests.
 DEFAULT_CONFIG = {
     "candidates": [
         {
-            "name": "Flat A - Dupont Circle",
-            "address": "1500 Connecticut Ave NW, Washington, DC 20036, USA",
-            "rent": 1800,
-            # Carol M. Highsmith, Library of Congress - public domain, so the
-            # demo can ship it and a screenshot of the report can be published.
-            # Flat B deliberately has none, so the demo shows both a photo panel
-            # and the score dial that replaces it.
-            "image": "https://commons.wikimedia.org/wiki/Special:FilePath/Row_houses%2C_16th_near_Q_St.%2C_NW%2C_Washington%2C_D.C_LCCN2010641449.tif?width=1000"
+            "name": "Flat A - Kreuzberg",
+            "address": "Oranienstraße 25, 10999 Berlin, Germany",
+            "rent": 1750
         },
         {
-            "name": "Flat B - Foggy Bottom",
-            "address": "2100 Pennsylvania Avenue NW, Washington, DC 20037, USA",
-            "rent": 2100
+            "name": "Flat B - Prenzlauer Berg",
+            "address": "Kastanienallee 49, 10119 Berlin, Germany",
+            "rent": 1950
         },
         {
-            "name": "Flat C - Logan Circle",
-            "address": "1400 14th St NW, Washington, DC 20005, USA",
-            "rent": 1950,
-            "image": "https://commons.wikimedia.org/wiki/Special:FilePath/Row_houses_along_the_1500_block_of_Corcoran_St.%2C_NW%2C_Washington%2C_D.C_LCCN2010641272.tif?width=1000"
+            "name": "Flat C - Neukölln",
+            "address": "Weserstraße 42, 12045 Berlin, Germany",
+            "rent": 1500
         }
     ],
+    # Both cycled, and not for variety: Berlin districts are far enough apart
+    # that every one of these is 44-86 minutes on foot, so a walked demo would
+    # print 0.00 against the 45-minute cap for most candidates and read as a
+    # broken tool. By bike they land at 11-33 minutes. One mode also means one
+    # street network downloaded rather than two.
     "destinations": {
-        "White House": {
-            "address": "1600 Pennsylvania Ave NW, Washington, DC 20500, USA",
-            "weight": 0.15,
-            "mode": "walk",
-            "icon": "landmark",
+        "Office": {
+            "address": "Potsdamer Platz 1, 10785 Berlin, Germany",
+            "weight": 0.20,
+            "mode": "bike",
+            "icon": "briefcase",
             "color": "blue"
         },
-        "Union Station": {
-            "address": "50 Massachusetts Ave NE, Washington, DC 20002, USA",
+        "Hauptbahnhof": {
+            "address": "Europaplatz 1, 10557 Berlin, Germany",
             "weight": 0.15,
-            "mode": "walk",
+            "mode": "bike",
             "icon": "train",
             "color": "red"
         }

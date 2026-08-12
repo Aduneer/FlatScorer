@@ -358,8 +358,8 @@ def test_the_candidates_frame_always_offers_an_image_column():
 def test_a_config_with_no_images_leaves_the_image_column_editable():
     """Reindexing in a column nothing supplies gives it float64 dtype, and the
     editor refuses to edit a float as text - the exact shape that took the whole
-    page down for `url`. The demo config carries photos, so this has to load a
-    config without them rather than rely on the default."""
+    page down for `url`. Loads its own image-less config rather than relying on
+    the demo, which happens to ship without photos but need not stay that way."""
     from flatscorer.gui import state as gui_state
 
     app = fresh_app()
@@ -390,15 +390,19 @@ def test_a_photo_typed_into_the_editor_reaches_the_built_config():
 def test_a_candidate_with_no_photo_carries_no_image_key_at_all():
     """A flat with no photo must round-trip exactly as it did before the field.
 
-    The demo config gives Flat A and Flat C a photo and deliberately leaves Flat
-    B without one, so the built config has to show both shapes.
+    The demo config ships no photos at all, so this puts one on the first flat
+    to get both shapes into a single built config - which is the case that
+    matters, since a column only some rows supply is what broke `url`.
     """
-    candidates = build_config_from(fresh_app())["candidates"]
+    app = fresh_app()
+    edit_cell(app, 0, "image", "https://example.com/photo.jpg")
+    app.run()
 
-    assert [c["name"] for c in candidates if "image" in c] == [
-        "Flat A - Dupont Circle", "Flat C - Logan Circle",
-    ]
+    candidates = build_config_from(app)["candidates"]
+
+    assert [c["name"] for c in candidates if "image" in c] == ["Flat A - Kreuzberg"]
     assert "image" not in candidates[1]
+    assert "image" not in candidates[2]
 
 
 def test_a_cleared_photo_cell_is_omitted_rather_than_exported_as_nan():

@@ -94,8 +94,8 @@ installs the dependencies but not the package itself and `python -m flatscorer`
 won't resolve. Either install it as above, or point Python at the source tree for
 a one-off: `PYTHONPATH=src python -m flatscorer --config config.json`.
 
-Running without `--config` uses built-in demo data (Washington, DC) so you can
-try it immediately.
+Running without `--config` uses built-in demo data (three flats in central
+Berlin) so you can try it immediately.
 
 ## GUI
 
@@ -134,8 +134,9 @@ network..."), so a slow run reads as slow rather than as a hang.
   <img src="https://raw.githubusercontent.com/Aduneer/FlatScorer/main/assets/gui_preview.png" alt="FlatScorer Streamlit GUI" width="800"/>
 </p>
 
-<sub>The flat photos in the demo config and in the screenshots are by Carol M.
-Highsmith, from the Library of Congress, and are in the public domain.</sub>
+<sub>The demo config ships no flat photos, so each card shows the score dial that
+stands in for one. Point a candidate's `image` at a URL or a local file to get a
+photo panel there instead.</sub>
 
 ## How It Works
 
@@ -178,9 +179,10 @@ in both directions at once — and wrong invisibly, since it still produces a
 plausible number.
 
 The networks are downloaded lazily, one per mode your destinations actually
-mention. An all-walk config — every config written before this existed, and the
-shipped example — makes exactly one download, as it always did. Only a genuinely
-mixed config pays for a second.
+mention. A single-mode config makes exactly one download — that covers every
+config written before this existed, which walked everywhere, and the shipped
+demo, which cycles to both of its destinations. Only a genuinely mixed config
+pays for a second.
 
 Each mode has its own pace (`walking_speed_m_per_min`, `cycling_speed_m_per_min`)
 and its own column in the results: `office_bike_min` beside `supermarket_walk_min`,
@@ -332,7 +334,7 @@ Everything is driven by a single JSON file. Generate a template with
       // Photos you point this at stay yours to account for: listing photos are
       // usually the agency's copyright, and embedding one copies it into the
       // report — so treat a report containing them as a private document.
-      "image": "https://commons.wikimedia.org/wiki/Special:FilePath/Row_houses%2C_16th_near_Q_St.%2C_NW%2C_Washington%2C_D.C_LCCN2010641449.tif?width=1000"
+      "image": "https://www.example-listings.de/photos/12345.jpg"
     }
   ],
 
