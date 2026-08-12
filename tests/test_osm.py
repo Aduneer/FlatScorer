@@ -13,6 +13,7 @@ import geopandas as gpd
 import osmnx as ox
 import pandas as pd
 import pytest
+import requests
 from conftest import (
     BERLIN_CRS,
     only_problem,
@@ -54,6 +55,22 @@ def test_safe_filter_tolerates_none_and_empty_input():
 
 MIRRORS = ["https://mirror-a/api", "https://mirror-b/api"]
 CONFIGURED_MIRROR = "https://configured-by-the-user/api"
+
+# Captured at import, before `reachable_mirrors` below can patch it out: the
+# probe's own tests need the real implementation, not the stub every other
+# mirror test runs against.
+REAL_MIRROR_PROBE = fs.osm._mirror_is_reachable
+
+
+@pytest.fixture(autouse=True)
+def reachable_mirrors(monkeypatch):
+    """Treat every mirror as answering, unless a test says otherwise.
+
+    `query_with_retry` probes each mirror before using it, and the sentinel URLs
+    here resolve to nothing - so without this every mirror test would exercise
+    the skip path rather than the fallback logic it means to test.
+    """
+    monkeypatch.setattr(fs.osm, "_mirror_is_reachable", lambda mirror, **kw: True)
 
 
 @pytest.fixture
@@ -369,3 +386,158 @@ def test_every_setting_we_configure_exists_upstream():
 
     osm._configure_osmnx()  # idempotent by design
     assert ox.settings.http_user_agent == osm.USER_AGENT
+
+
+# --- Transit stops are not interchangeable -----------------------------------
+#
+# Every stop counted as 1 before this: a metro station and a once-hourly bus
+# stop were the same feature to the score.
+
+def transit_gdf(rows: list[tuple[Any, str, str, str | None]]) -> gpd.GeoDataFrame:
+    """Build a projected transit layer from (geometry, tag, value, name) rows."""
+    frame = {
+        "highway": [value if tag == "highway" else None for _, tag, value, _ in rows],
+        "railway": [value if tag == "railway" else None for _, tag, value, _ in rows],
+        "name": [name for *_, name in rows],
+    }
+    return gpd.GeoDataFrame(
+        frame, geometry=[geometry for geometry, *_ in rows], crs=BERLIN_CRS
+    )
+
+
+def test_transit_tags_cover_every_class_grouped_by_tag_key():
+    tags = fs.osm.transit_tags()
+    assert tags == {"railway": ["station", "halt", "tram_stop"], "highway": ["bus_stop"]}
+    # Every declared layer is reachable from the query it generates.
+    for layer in fs.osm.TRANSIT_LAYERS:
+        assert layer.value in tags[layer.tag]
+
+
+def test_a_station_outweighs_a_bus_stop():
+    """The whole point: the weights are ordered by service level."""
+    weights = {layer.value: layer.weight for layer in fs.osm.TRANSIT_LAYERS}
+    assert weights["station"] > weights["halt"] > weights["tram_stop"] > weights["bus_stop"]
+
+
+def test_a_bus_stop_is_exactly_one_equivalent():
+    """Weights are in bus-stop equivalents, which is what keeps DEFAULT_SATURATION
+    ['transit'] meaning what it was calibrated to mean. Rescaling this table
+    silently re-tunes that anchor."""
+    bus = next(layer for layer in fs.osm.TRANSIT_LAYERS if layer.value == "bus_stop")
+    assert bus.weight == 1.0
+
+
+def test_with_transit_weight_stamps_every_row():
+    gdf = transit_gdf([(Point(ORIGIN_X, ORIGIN_Y), "highway", "bus_stop", None)])
+    weighted = fs.osm.with_transit_weight(gdf, 1.0)
+    assert list(weighted[fs.osm.TRANSIT_WEIGHT_COLUMN]) == [1.0]
+    # The input is not mutated - the caller still holds an unweighted layer.
+    assert fs.osm.TRANSIT_WEIGHT_COLUMN not in gdf.columns
+
+
+def test_with_transit_weight_tolerates_an_empty_layer():
+    empty = transit_gdf([]).iloc[0:0]
+    assert fs.osm.with_transit_weight(empty, 3.0) is not None
+    assert fs.osm.with_transit_weight(None, 3.0) is None
+
+
+def test_a_bus_stop_node_inside_a_station_polygon_keeps_both_weights():
+    """The trap this feature had to clear.
+
+    `dedupe_features(keep="points")` discards the redundant *area*. Run over
+    bus and station together, a station polygon sitting on a bus-stop node is
+    the copy that gets dropped - silently turning a 3.0 feature into a 1.0 one.
+    It was harmless while every stop counted as 1, which is why none of the
+    existing dedupe tests would catch it.
+    """
+    bus_node = (Point(ORIGIN_X, ORIGIN_Y), "highway", "bus_stop", None)
+    station_area = (building(ORIGIN_X, ORIGIN_Y), "railway", "station", "Hauptbahnhof")
+
+    # What the old pipeline did: concatenate first, dedupe once.
+    combined = fs.dedupe_features(transit_gdf([bus_node, station_area]))
+    assert len(combined) == 1
+    assert list(combined.geometry.geom_type) == ["Point"]  # the station is gone
+
+    # What it does now: dedupe each class on its own, then weight, then combine.
+    bus_layer = fs.osm.with_transit_weight(fs.dedupe_features(transit_gdf([bus_node])), 1.0)
+    station_layer = fs.osm.with_transit_weight(fs.dedupe_features(transit_gdf([station_area])), 3.0)
+    together = pd.concat([bus_layer, station_layer])
+    assert len(together) == 2
+    assert together[fs.osm.TRANSIT_WEIGHT_COLUMN].sum() == 4.0
+
+
+def test_a_station_mapped_as_both_node_and_building_still_counts_once():
+    """Per-class dedupe must not lose the within-class duplicate it was built for."""
+    gdf = transit_gdf([
+        (Point(ORIGIN_X, ORIGIN_Y), "railway", "station", "Hauptbahnhof"),
+        (building(ORIGIN_X, ORIGIN_Y), "railway", "station", "Hauptbahnhof"),
+    ])
+    deduped = fs.dedupe_features(gdf)
+    assert len(deduped) == 1
+    weighted = fs.osm.with_transit_weight(deduped, 3.0)
+    assert weighted[fs.osm.TRANSIT_WEIGHT_COLUMN].sum() == 3.0
+
+
+# --- A dead mirror must cost seconds, not minutes ----------------------------
+
+class FakeResponse:
+    ok = True
+
+
+def test_a_probe_that_gets_any_response_counts_as_reachable(monkeypatch):
+    """404 or 504 still means the host is there, which is the only question."""
+    calls = {}
+
+    def fake_get(url, **kwargs):
+        calls["url"] = url
+        calls["timeout"] = kwargs.get("timeout")
+        return FakeResponse()
+
+    monkeypatch.setattr(fs.osm.requests, "get", fake_get)
+    assert REAL_MIRROR_PROBE("https://overpass-api.de/api/interpreter") is True
+    # Probed the instance's status endpoint, not the interpreter.
+    assert calls["url"] == "https://overpass-api.de/api/status"
+    # A (connect, read) pair - the shape osmnx's own timeout setting cannot take.
+    assert isinstance(calls["timeout"], tuple) and len(calls["timeout"]) == 2
+
+
+def test_a_probe_that_cannot_connect_counts_as_dead(monkeypatch):
+    def refuse(url, **kwargs):
+        raise requests.exceptions.ConnectionError("no route to host")
+
+    monkeypatch.setattr(fs.osm.requests, "get", refuse)
+    assert REAL_MIRROR_PROBE("https://mirror-a/api") is False
+
+
+def test_an_unreachable_mirror_is_skipped_without_being_queried(monkeypatch, no_sleep):
+    """The hang this fixes: osmnx spends requests_timeout (180 s by default) on
+    every attempt, so two dead mirrors at two attempts each is ~12 minutes of
+    silence. A skipped mirror must not be queried at all."""
+    queried = []
+    monkeypatch.setattr(fs.osm, "_mirror_is_reachable", lambda mirror, **kw: mirror != MIRRORS[0])
+
+    def fn():
+        queried.append(ox.settings.overpass_url)
+        return "data"
+
+    assert fs.query_with_retry(fn, mirrors=MIRRORS) == "data"
+    assert queried == [MIRRORS[1]]
+
+
+def test_every_mirror_unreachable_raises_rather_than_hanging(monkeypatch, no_sleep):
+    monkeypatch.setattr(fs.osm, "_mirror_is_reachable", lambda mirror, **kw: False)
+
+    def fn():
+        raise AssertionError("an unreachable mirror must never be queried")
+
+    with pytest.raises(RuntimeError, match="All Overpass mirrors failed"):
+        fs.query_with_retry(fn, mirrors=MIRRORS)
+
+
+def test_the_mirror_setting_is_restored_after_every_mirror_is_skipped(monkeypatch, no_sleep, pinned_mirror):
+    """The skip path is a `continue`, so it has to honour the same restore
+    guarantee the failure path does."""
+    monkeypatch.setattr(fs.osm, "_mirror_is_reachable", lambda mirror, **kw: False)
+    with pytest.raises(RuntimeError):
+        fs.query_with_retry(lambda: "data", mirrors=MIRRORS)
+    assert ox.settings.overpass_url == pinned_mirror

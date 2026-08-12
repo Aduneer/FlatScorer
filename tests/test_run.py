@@ -6,6 +6,7 @@ touch the network is either not exercised or stubbed.
 
 from __future__ import annotations
 
+import geopandas as gpd
 import networkx as nx
 import osmnx as ox
 import pandas as pd
@@ -17,6 +18,7 @@ from conftest import (
     one_destination_config,
     valid_config,
 )
+from shapely.geometry import Point, Polygon
 
 import flatscorer as fs
 from flatscorer import geocode
@@ -401,3 +403,91 @@ def test_forgetting_the_comment_argument_misparses_conspicuously(offline_run, tm
 
     assert naive.shape[1] == 1
     assert "OpenStreetMap" in naive.columns[0]
+
+
+# ------------------------------------------------------------ transit weighting --
+#
+# A metro station and a once-hourly bus stop both counted as 1 before this.
+
+def transit_pois(rows: list[tuple[str, str, object, str | None]]) -> gpd.GeoDataFrame:
+    """Unprojected POIs at the candidate, as (tag, value, geometry, name) rows."""
+    return gpd.GeoDataFrame(
+        {
+            "highway": [v if t == "highway" else None for t, v, _, _ in rows],
+            "railway": [v if t == "railway" else None for t, v, _, _ in rows],
+            "name": [name for *_, name in rows],
+        },
+        geometry=[geometry for _, _, geometry, _ in rows],
+        crs="EPSG:4326",
+    )
+
+
+CANDIDATE_POINT = Point(13.0, 52.0)
+
+
+def station_footprint(half: float = 0.0001) -> Polygon:
+    """A building outline around the candidate - ~11 m at this latitude."""
+    return Polygon([(13.0 - half, 52.0 - half), (13.0 + half, 52.0 - half),
+                    (13.0 + half, 52.0 + half), (13.0 - half, 52.0 + half)])
+
+
+def test_a_metro_station_is_worth_more_than_a_bus_stop(offline_run):
+    """The feature, end to end: same one stop, different service level."""
+    bus = offline_run(one_destination_config(),
+                      pois=transit_pois([("highway", "bus_stop", CANDIDATE_POINT, None)]))
+    station = offline_run(one_destination_config(),
+                          pois=transit_pois([("railway", "station", CANDIDATE_POINT, "Hbf")]))
+
+    assert float(bus.iloc[0]["transit_equiv_stops"]) == 1.0
+    assert float(station.iloc[0]["transit_equiv_stops"]) == 3.0
+    # And it reaches the score, not just the column.
+    assert float(station.iloc[0]["score"]) > float(bus.iloc[0]["score"])
+
+
+def test_a_tram_stop_sits_between_a_bus_stop_and_a_station(offline_run):
+    tram = offline_run(one_destination_config(),
+                       pois=transit_pois([("railway", "tram_stop", CANDIDATE_POINT, None)]))
+    assert float(tram.iloc[0]["transit_equiv_stops"]) == 1.5
+
+
+def test_a_bus_stop_node_inside_a_station_polygon_keeps_both(offline_run):
+    """The dedupe trap, pinned at the level where it would actually happen.
+
+    Deduping the concatenated transit layer - as run() did while every stop
+    counted as 1 - drops the redundant *area*, so the station polygon loses to
+    the bus-stop node and a 3.0 feature silently becomes a 1.0 one. This fails
+    if anyone re-combines the classes before deduping them.
+    """
+    result = offline_run(one_destination_config(), pois=transit_pois([
+        ("highway", "bus_stop", CANDIDATE_POINT, None),
+        ("railway", "station", station_footprint(), "Hauptbahnhof"),
+    ]))
+    assert float(result.iloc[0]["transit_equiv_stops"]) == 4.0
+
+
+def test_a_station_mapped_twice_still_counts_once(offline_run):
+    """Per-class dedupe has to keep doing the job it was built for."""
+    result = offline_run(one_destination_config(), pois=transit_pois([
+        ("railway", "station", CANDIDATE_POINT, "Hauptbahnhof"),
+        ("railway", "station", station_footprint(), "Hauptbahnhof"),
+    ]))
+    assert float(result.iloc[0]["transit_equiv_stops"]) == 3.0
+
+
+def test_a_run_with_no_transit_at_all_still_scores(offline_run):
+    """The empty-layer path, which every other test takes implicitly."""
+    result = offline_run(one_destination_config(), pois=transit_pois([]))
+    assert float(result.iloc[0]["transit_equiv_stops"]) == 0.0
+
+
+def test_a_stop_served_by_both_a_tram_and_a_bus_counts_as_both(offline_run):
+    """One pole tagged `highway=bus_stop` *and* `railway=tram_stop` is how OSM
+    commonly maps an interchange. It matches both layers and earns both weights,
+    which is intended - that stop really does give you both services - and is
+    the one place the per-class split can double-count a single node."""
+    both = gpd.GeoDataFrame(
+        {"highway": ["bus_stop"], "railway": ["tram_stop"], "name": ["Interchange"]},
+        geometry=[CANDIDATE_POINT], crs="EPSG:4326",
+    )
+    result = offline_run(one_destination_config(), pois=both)
+    assert float(result.iloc[0]["transit_equiv_stops"]) == 2.5

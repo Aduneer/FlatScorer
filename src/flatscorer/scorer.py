@@ -385,9 +385,13 @@ class FlatScorer:
                 "amenity": ["pharmacy"],
                 "leisure": ["fitness_centre", "park"],
                 "landuse": ["grass", "forest"],
-                "railway": ["tram_stop"],
-                "highway": ["bus_stop", "primary", "secondary"],
+                "highway": ["primary", "secondary"],
             }
+            # Every transit class comes from one table, so adding a class never
+            # means remembering to widen this query too. Merged rather than
+            # assigned: `highway` already carries the busy-road values.
+            for tag, values in osm.transit_tags().items():
+                tags[tag] = sorted(set(tags.get(tag, [])) | set(values))
             return ox.features_from_bbox(bbox=bbox, tags=tags)
 
         graphs = {}
@@ -428,17 +432,20 @@ class FlatScorer:
         parks        = osm.safe_filter(pois, "leisure", "park")
         greenland    = osm.safe_filter(pois, "landuse", ["grass", "forest"])
         green_all    = pd.concat([gdf for gdf in [parks, greenland] if not gdf.empty]) if not (parks.empty and greenland.empty) else gpd.GeoDataFrame()
-        bus          = osm.safe_filter(pois, "highway", "bus_stop")
-        tram         = osm.safe_filter(pois, "railway", "tram_stop")
-        transit      = pd.concat([gdf for gdf in [bus, tram] if not gdf.empty]) if not (bus.empty and tram.empty) else gpd.GeoDataFrame()
+        # Kept split by class all the way through projection and dedupe - see
+        # the dedupe block below for why combining them early is a bug now.
+        transit_layers = {
+            layer: osm.safe_filter(pois, layer.tag, layer.value) for layer in osm.TRANSIT_LAYERS
+        }
         busy_roads   = osm.safe_filter(pois, "highway", ["primary", "secondary"])
 
         def proj(gdf):
             return gdf.to_crs(projected_crs) if (gdf is not None and len(gdf) > 0) else gdf
 
-        supermarkets_p, bakeries_p, pharmacies_p, gyms_p, transit_p, green_p, roads_p = map(
-            proj, [supermarkets, bakeries, pharmacies, gyms, transit, green_all, busy_roads]
+        supermarkets_p, bakeries_p, pharmacies_p, gyms_p, green_p, roads_p = map(
+            proj, [supermarkets, bakeries, pharmacies, gyms, green_all, busy_roads]
         )
+        transit_layers_p = {layer: proj(gdf) for layer, gdf in transit_layers.items()}
 
         def dedupe(gdf, label, keep="points"):
             """Collapse node+area duplicates, reporting what it removed."""
@@ -456,10 +463,32 @@ class FlatScorer:
         bakeries_p     = dedupe(bakeries_p, "bakeries")
         pharmacies_p   = dedupe(pharmacies_p, "pharmacies")
         gyms_p         = dedupe(gyms_p, "gyms")
-        transit_p      = dedupe(transit_p, "transit stops")
+
+        # Each transit class is deduped *on its own*, then weighted, then
+        # combined - and that order is load-bearing now that the classes carry
+        # different weights. Deduping the concatenation instead lets a feature
+        # cross weight classes: with keep="points" the redundant *area* is the
+        # one dropped, so a station polygon sitting on a bus-stop node would be
+        # discarded in favour of the node, quietly turning a 3.0 into a 1.0.
+        # It was harmless while every stop counted as 1; it is not any more.
+        transit_parts = []
+        for layer, gdf in transit_layers_p.items():
+            weighted = osm.with_transit_weight(dedupe(gdf, layer.label), layer.weight)
+            if weighted is not None and len(weighted) > 0:
+                transit_parts.append((layer, weighted))
+        transit_p = (
+            pd.concat([gdf for _, gdf in transit_parts]) if transit_parts else gpd.GeoDataFrame()
+        )
+
         # Green keeps the polygon instead: it carries the m² that the green score
         # is mostly made of, while the node would only add a 0.5 bonus.
         green_p        = dedupe(green_p, "green spaces", keep="areas")
+
+        if transit_parts:
+            composition = ", ".join(
+                f"{len(gdf)} x {layer.label} @ {layer.weight:g}" for layer, gdf in transit_parts
+            )
+            self._log(f"\nTransit stops, weighted in bus-stop equivalents: {composition}")
 
         # Each destination's nearest graph node is the same for every candidate,
         # so resolve it once here instead of once per (candidate, destination).
@@ -534,7 +563,10 @@ class FlatScorer:
                 "bakery_count":      count_nearby(lat, lon, bakeries_p, projected_crs, dist=self.buffer_m),
                 "pharmacy_count":    count_nearby(lat, lon, pharmacies_p, projected_crs, dist=self.buffer_m),
                 "gym_count":         count_nearby(lat, lon, gyms_p, projected_crs, dist=self.buffer_m),
-                "transit_count":     count_nearby(lat, lon, transit_p, projected_crs, dist=self.buffer_m),
+                # Weighted, not a headcount: bus-stop equivalents, so the
+                # saturation anchor keeps the meaning it was calibrated with.
+                "transit_count":     count_nearby(lat, lon, transit_p, projected_crs, dist=self.buffer_m,
+                                                  weight_col=osm.TRANSIT_WEIGHT_COLUMN),
                 "green_score":       green_area_m2 / 1000.0 + green_points * 0.5,
                 "noise_distance_m":  effective_road_dist,
                 "destinations_min":  dest_times,
@@ -551,7 +583,9 @@ class FlatScorer:
                 "bakeries": m["bakery_count"],
                 "pharmacies": m["pharmacy_count"],
                 "gyms": m["gym_count"],
-                "transit_stops": m["transit_count"],
+                # Not a headcount any more, and named so nobody reads it as one:
+                # a metro station contributes 3.0 where a bus stop contributes 1.
+                "transit_equiv_stops": round(m["transit_count"], 1),
                 "green_area_m2": round(green_area_m2),
                 "dist_busy_road_m": round(effective_road_dist),
             }

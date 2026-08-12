@@ -113,7 +113,8 @@ def offline_run(monkeypatch, tmp_path):
     monkeypatch.setattr(osm, "query_with_retry", lambda fn, **kw: responses.pop(0))
 
     def run(config: dict, graphs: dict[str, nx.MultiDiGraph] | None = None,
-            progress=None, override_output: bool = True) -> pd.DataFrame:
+            progress=None, override_output: bool = True,
+            pois: gpd.GeoDataFrame | None = None) -> pd.DataFrame:
         # Outputs are redirected into tmp_path so a run doesn't litter the
         # checkout. `override_output=False` leaves the config alone, which is how
         # the default output location itself gets tested - pair it with
@@ -137,7 +138,10 @@ def offline_run(monkeypatch, tmp_path):
         if config.get("parameters", {}).get("routing_mode") == "straight_line":
             modes = []
         responses[:] = [(graphs or {}).get(mode) or chain_graph() for mode in modes]
-        responses.append(gpd.GeoDataFrame())
+        # An empty frame is what every layer tolerates and what most tests want.
+        # `pois` supplies a real one in lat/lon - run() projects it - for the
+        # tests that need the POI-derived metrics to be non-zero.
+        responses.append(gpd.GeoDataFrame() if pois is None else pois)
         return fs.FlatScorer(config, verbose=False, progress=progress).run()
 
     return run

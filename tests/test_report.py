@@ -177,7 +177,7 @@ def test_an_image_exactly_at_the_cap_is_still_embedded(tmp_path):
 def sample_frame(**overrides):
     row = {"name": "Flat A", "score": SAMPLE_SCORE, "rent_eur": 1250,
            "supermarkets": 8, "bakeries": 6, "pharmacies": 4, "gyms": 3,
-           "transit_stops": 14, "green_area_m2": 35000, "dist_busy_road_m": 200,
+           "transit_equiv_stops": 14.0, "green_area_m2": 35000, "dist_busy_road_m": 200,
            "Work_walk_min": 9.0, "lat": 52.0, "lon": 13.0}
     row.update(overrides)
     return pd.DataFrame([row])

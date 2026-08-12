@@ -145,7 +145,8 @@ For each candidate apartment, FlatScorer:
 3. **Deduplicates POIs** mapped both as a node and as a building outline
    (see [Duplicate POIs](#duplicate-pois)).
 4. **Counts nearby amenities** within a configurable radius (default 500 m):
-   supermarkets, bakeries, pharmacies, gyms, bus/tram stops.
+   supermarkets, bakeries, pharmacies, gyms, and transit stops
+   (see [Transit stops are weighted](#transit-stops-are-weighted)).
 5. **Measures green space** — park and forest polygon area plus point features.
 6. **Estimates noise exposure** via distance to the nearest primary/secondary road.
 7. **Routes commutes** to each of your defined destinations over the real
@@ -183,6 +184,32 @@ and its own column in the results: `office_bike_min` beside `supermarket_walk_mi
 so a cycled commute is never reported under a heading that says "walk". On the map,
 cycled legs are drawn dashed.
 
+### Transit stops are weighted
+
+A metro station and a once-hourly bus stop are not the same thing, so they don't
+count the same. Each stop contributes **bus-stop equivalents**:
+
+| Stop | OSM tag | Worth |
+|---|---|---|
+| Rail / metro station | `railway=station` | 3.0 |
+| Rail halt | `railway=halt` | 2.0 |
+| Tram stop | `railway=tram_stop` | 1.5 |
+| Bus stop | `highway=bus_stop` | 1.0 |
+
+A bus stop stays at 1.0 deliberately: `saturation.transit` keeps meaning exactly
+what it did before, so the change only moves scores where the transit genuinely
+is better rather than inflating everyone's.
+
+These are a judgement about service level, not a preference — how much transit
+matters *to you* is already `weights.transit`, and a second knob on the same axis
+would just be a way to count the same opinion twice.
+
+A stop mapped as both (one pole tagged `highway=bus_stop` *and*
+`railway=tram_stop`, which is how interchanges are usually drawn) earns both, at
+2.5 — it really does give you both services.
+
+The CSV column is `transit_equiv_stops`, and the run log prints the mix it found.
+
 ### Duplicate POIs
 
 OpenStreetMap frequently maps one real place twice — a supermarket tagged on a
@@ -219,7 +246,8 @@ score = 10 × Σ (wᵢ × normalizedᵢ) / Σ wᵢ
 
 | Term | Normalized as | Anchor (configurable) |
 |---|---|---|
-| supermarket, bakery, pharmacy, gym, transit | `count / (count + half)` — saturating | `saturation.<metric>` |
+| supermarket, bakery, pharmacy, gym | `count / (count + half)` — saturating | `saturation.<metric>` |
+| transit | same curve, over weighted stops rather than a headcount | `saturation.transit` |
 | green | same curve over `green_score` (m² / 1000 + 0.5 per point feature) | `saturation.green` |
 | noise | `min(distance, cap) / cap` | `noise_cap_m` |
 | rent | `1 − rent / budget`, clamped to 0 | `rent_budget_eur` |
@@ -339,7 +367,7 @@ Everything is driven by a single JSON file. Generate a template with
     "max_bbox_span_km": 30,        // refuse to download an area wider than this
     "saturation": {                // count earning half credit (diminishing returns)
       "supermarket": 2, "bakery": 2, "pharmacy": 1,
-      "gym": 1, "transit": 4, "green": 30
+      "gym": 1, "transit": 4, "green": 30   // transit counts bus-stop equivalents
     },
     "projected_crs": "auto",       // auto-detect UTM zone, or e.g. "EPSG:25832"
     "show_walk_routes": true,      // draw predicted commute routes on the map by default

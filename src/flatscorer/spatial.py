@@ -118,12 +118,23 @@ def check_search_area(points: dict[str, tuple[float, float]], crs: str,
     raise SearchAreaError(span_km, max_span_km, labels[farthest], distances[farthest])
 
 
-def count_nearby(lat: float, lon: float, gdf_proj: gpd.GeoDataFrame, crs: str, dist: float = 500) -> int:
-    """Count features within `dist` meters of a given coordinate."""
+def count_nearby(lat: float, lon: float, gdf_proj: gpd.GeoDataFrame, crs: str, dist: float = 500,
+                 weight_col: str | None = None) -> float:
+    """Count features within `dist` meters of a given coordinate.
+
+    With `weight_col`, sums that column instead of the rows - so a layer whose
+    members are not interchangeable (transit stops, where a metro station is
+    worth more than a bus stop) can contribute what each one is actually worth.
+    Returns an `int` when unweighted, so every caller that just wants a count is
+    unaffected.
+    """
     if gdf_proj is None or len(gdf_proj) == 0:
         return 0
     buf = to_point(lat, lon, crs).buffer(dist)
-    return int(gdf_proj.intersects(buf).sum())
+    within = gdf_proj.intersects(buf)
+    if weight_col is None or weight_col not in gdf_proj.columns:
+        return int(within.sum())
+    return float(gdf_proj.loc[within, weight_col].fillna(0).sum())
 
 
 def nearest_distance_m(lat: float, lon: float, gdf_proj: gpd.GeoDataFrame, crs: str) -> float | None:

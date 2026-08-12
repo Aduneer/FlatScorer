@@ -22,7 +22,7 @@ def map_frame(scores: list[float]) -> pd.DataFrame:
     return pd.DataFrame([
         {
             "name": f"Flat {i}", "score": s, "rent_eur": 1000, "supermarkets": 1,
-            "bakeries": 1, "pharmacies": 1, "gyms": 1, "transit_stops": 1,
+            "bakeries": 1, "pharmacies": 1, "gyms": 1, "transit_equiv_stops": 1.0,
             "green_area_m2": 100, "dist_busy_road_m": 200,
             "lat": 52.52 + i * 0.001, "lon": 13.40,
         }

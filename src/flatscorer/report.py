@@ -265,7 +265,7 @@ def _card_html(rank: int, row: pd.Series, breakdown: dict[str, dict[str, float]]
 
     chips = [f'<span class="fs-chip">€<strong>{_cell(row.get("rent_eur"))}</strong>/mo</span>']
     chips += [f'<span class="fs-chip">{c}</span>' for c in _commute_chips(row, row.index)]
-    for label, key in (("supermarkets", "supermarkets"), ("transit stops", "transit_stops"),
+    for label, key in (("supermarkets", "supermarkets"), ("transit (bus-stop equiv.)", "transit_equiv_stops"),
                        ("m² green", "green_area_m2"), ("m to a busy road", "dist_busy_road_m")):
         if key in row.index:
             chips.append(f'<span class="fs-chip"><strong>{_cell(row[key])}</strong> {label}</span>')

@@ -115,7 +115,7 @@ def generate_map(df: pd.DataFrame, resolved_destinations: dict[str, Any], html_f
             f"Commute: {dest_html}<br>"
             f"Supermarkets: {row['supermarkets']} | Bakeries: {row['bakeries']}<br>"
             f"Pharmacies: {row['pharmacies']} | Gyms: {row['gyms']}<br>"
-            f"Transit stops: {row['transit_stops']}<br>"
+            f"Transit, in bus-stop equivalents: {row['transit_equiv_stops']}<br>"
             f"Green area nearby: {row['green_area_m2']} m²<br>"
             f"Distance to busy road: {row['dist_busy_road_m']} m"
             # Last line so the click target sits at the bottom of the popup,

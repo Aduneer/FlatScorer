@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import math
 import time
-from typing import Any
+from typing import Any, NamedTuple
 
 import geopandas as gpd
 import osmnx as ox
@@ -107,6 +107,103 @@ DEFAULT_OVERPASS_MIRRORS = [
 DEFAULT_POI_DEDUPE_TOLERANCE_M = 10.0
 
 
+class TransitLayer(NamedTuple):
+    """One class of public-transport stop, and what a stop of that class is worth."""
+
+    tag: str
+    value: str
+    weight: float
+    label: str
+
+
+# Not every stop is worth the same. A metro station and a once-hourly bus stop
+# were counted identically before this table existed, which flattered a flat on
+# a quiet bus route and undersold one on a metro line.
+#
+# **Weights are in bus-stop equivalents**, deliberately: a bus stop stays 1.0, so
+# `DEFAULT_SATURATION["transit"]` keeps the meaning it was calibrated with and
+# the change only moves scores where the transit genuinely is better. Anything
+# that rescales this table silently re-tunes that anchor with it.
+#
+# The numbers are a judgement about service level, not a user preference - how
+# much transit matters to *you* is already `weights["transit"]`, and a second
+# knob on the same axis would only be a way to double-count the same opinion.
+#
+# Adding a class is an entry here and nothing else: `run()` iterates this table
+# to build, dedupe and weight the layers. Order is most- to least-significant,
+# which is the order the run log reports them in.
+#
+# A stop tagged as more than one class - `highway=bus_stop` *and*
+# `railway=tram_stop` on one pole, which is how interchanges are commonly mapped
+# - matches both layers and contributes both weights (2.5 here). That is
+# intended: it really does give you both services. It is also the one place the
+# per-class split can double-count a single node, so it is pinned by a test.
+TRANSIT_LAYERS = (
+    TransitLayer("railway", "station", 3.0, "rail/metro stations"),
+    TransitLayer("railway", "halt", 2.0, "rail halts"),
+    TransitLayer("railway", "tram_stop", 1.5, "tram stops"),
+    TransitLayer("highway", "bus_stop", 1.0, "bus stops"),
+)
+
+
+# The per-feature weight `count_nearby` sums. Leading underscore because it is
+# ours, not an OSM tag, and it must not collide with one.
+TRANSIT_WEIGHT_COLUMN = "_transit_weight"
+
+
+def transit_tags() -> dict[str, list[str]]:
+    """The Overpass tag filter covering every transit class, grouped by tag key."""
+    tags: dict[str, list[str]] = {}
+    for layer in TRANSIT_LAYERS:
+        tags.setdefault(layer.tag, []).append(layer.value)
+    return tags
+
+
+def with_transit_weight(gdf: gpd.GeoDataFrame, weight: float) -> gpd.GeoDataFrame:
+    """Stamp every row of a transit layer with what one of its stops is worth."""
+    if gdf is None or len(gdf) == 0:
+        return gdf
+    result = gdf.copy()
+    result[TRANSIT_WEIGHT_COLUMN] = float(weight)
+    return result
+
+
+# A (connect, read) pair for the liveness probe below - the shape osmnx's own
+# timeout setting cannot take. Generous enough that a merely busy mirror is not
+# mistaken for a dead one, short enough that an unreachable host costs seconds.
+MIRROR_PROBE_TIMEOUT_S = (5.0, 10.0)
+
+
+def _mirror_is_reachable(mirror: str, timeout=MIRROR_PROBE_TIMEOUT_S) -> bool:
+    """Is this Overpass instance answering at all? Cheap, and fast to give up on.
+
+    This exists because the obvious fix doesn't work. osmnx spends
+    `settings.requests_timeout` on two unrelated jobs: the `requests` client
+    timeout *and* the server-side `[timeout:N]` directive it interpolates into
+    the Overpass QL. So lowering it to fail fast on a dead host also tells a
+    live one to abandon a big query early, and a `(connect, read)` tuple - the
+    thing that would separate the two - renders as `[timeout:(5, 10)]` and gets
+    the query rejected outright. Nor can the timeout be smuggled in through
+    `settings.requests_kwargs`: osmnx passes `timeout=` *and* splats that dict
+    into the same call, so it raises on the duplicate keyword.
+
+    With the default 180 s, two unreachable mirrors at two attempts each is
+    ~12 minutes of total silence. Probing `/api/status` with a real connect
+    timeout turns that into ~20 seconds.
+
+    **Any HTTP response means reachable**, including 404 and 504: the question
+    is whether the host is there, not whether it likes the request. Only a
+    connection-level failure counts as dead, which is also what keeps a mirror
+    that doesn't publish `/api/status` from being skipped for no reason.
+    """
+    base = mirror.rstrip("/").removesuffix("/interpreter")
+    try:
+        requests.get(f"{base}/status", timeout=timeout, headers={"User-Agent": USER_AGENT})
+        return True
+    except requests.exceptions.RequestException:
+        return False
+
+
 def query_with_retry(fn, mirrors=DEFAULT_OVERPASS_MIRRORS, retries_per_mirror=2, backoff_s=3):
     """Run an Overpass-backed OSMnx call with automatic fallback across mirrors.
 
@@ -114,11 +211,18 @@ def query_with_retry(fn, mirrors=DEFAULT_OVERPASS_MIRRORS, retries_per_mirror=2,
     process-wide global, so leaving it pointed at whichever mirror happened to
     answer last would silently carry over into later runs - which matters in the
     long-lived Streamlit process, not just across CLI invocations.
+
+    Each mirror is probed for reachability before it is used, so an unreachable
+    one costs seconds instead of minutes - see `_mirror_is_reachable`.
     """
     original_url = ox.settings.overpass_url
     last_err = None
     try:
         for mirror in mirrors:
+            if not _mirror_is_reachable(mirror):
+                print(f"[!] {mirror} is not answering, skipping it...")
+                last_err = last_err or ConnectionError(f"{mirror} unreachable")
+                continue
             ox.settings.overpass_url = mirror
             for attempt in range(1, retries_per_mirror + 1):
                 try:

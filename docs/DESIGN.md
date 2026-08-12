@@ -52,7 +52,7 @@ everything scores badly is a run where everything *is* bad, which is
 information.
 
 The cost is that the anchors have to be set sensibly, and that the defaults
-encode assumptions about density that are not universal — see §4, where that
+encode assumptions about density that are not universal — see §6, where that
 turns out to matter more than expected.
 
 **How well does it work?** Informally but concretely: on a real shortlist, the
@@ -135,7 +135,58 @@ they can't use the stairs and cut-throughs that pedestrians can.
 That 12% is the justification for downloading a second network when a config
 mixes modes. A run whose destinations are all one mode downloads one graph.
 
-## 5. A second POI source, evaluated and rejected
+## 5. Not every transit stop is worth the same
+
+Every bus stop, tram stop and metro station counted as exactly 1 in the first
+version. That flatters a flat on a quiet bus route and undersells one on a metro
+line, which is the wrong answer for the question the tool exists to answer.
+
+Stops now contribute **bus-stop equivalents**: `railway=station` 3.0,
+`railway=halt` 2.0, `railway=tram_stop` 1.5, `highway=bus_stop` 1.0.
+
+Two decisions in that sentence are worth spelling out.
+
+**A bus stop stays at exactly 1.0, deliberately.** The saturation anchor for
+transit was calibrated against headcounts, and §6 is the whole story of what
+happens when a metric's meaning shifts underneath an anchor that was tuned for
+the old one. Denominating the weights in bus-stop equivalents means the anchor
+keeps the meaning it was calibrated with, and the change moves scores only where
+the transit genuinely is better — rather than inflating everyone's and
+re-tuning the amenity terms by accident.
+
+**The weights are not configurable, and that is not an oversight.** They encode
+a claim about service level — a metro runs more often and further than a bus —
+which is a fact about transit, not a preference. How much transit matters *to
+you* is already `weights.transit`. A second knob on the same axis would only be
+a way to express the same opinion twice and then wonder which one was winning.
+
+### The bug this quietly created
+
+The interesting part is what the change did to code that was already correct.
+
+Transit stops were deduped as one combined layer, because a stop mapped both as
+a node and as an area should count once. `dedupe_features(keep="points")`
+resolves such a pair by dropping the *area*. While every stop was worth 1, that
+was right no matter which copy survived.
+
+The moment the classes carry different weights, it is a bug: a station polygon
+sitting on top of a bus-stop node is the copy that gets discarded, so a 3.0
+feature silently becomes a 1.0 one. No error, no warning — just a slightly wrong
+score in exactly the dense interchange areas the feature was added to reward.
+
+The fix is ordering: **dedupe each class on its own, then weight, then
+combine.** The general shape is worth remembering, because it is not a bug in
+either piece of code — it is a bug in their combination, introduced by a change
+to neither. Code that is correct only because two things happen to be equal will
+fail silently the moment they stop being equal, and nothing in the type system
+or the existing tests knows that.
+
+One case is deliberately *not* deduplicated: a single pole tagged
+`highway=bus_stop` **and** `railway=tram_stop`, which is how interchanges are
+commonly mapped, matches both layers and earns 2.5. That stop really does give
+you both services.
+
+## 6. A second POI source, evaluated and rejected
 
 Every POI in FlatScorer comes from one Overpass query. [Overture
 Maps](https://overturemaps.org/) Places looked like a strictly better source:
@@ -174,7 +225,7 @@ rather than widen it. The honest conclusion is that swapping the source is a
 recalibration project, not a drop-in replacement — so it is parked rather than
 refuted.
 
-## 6. Everything that can fail, fails before the download
+## 7. Everything that can fail, fails before the download
 
 Both hard errors — `ConfigError` from `validate_config()` and `SearchAreaError`
 from `check_search_area()` — are raised **before any network call**.
@@ -194,7 +245,7 @@ A related rule: **prefer a hard error over an interactive prompt.** `run()` is
 driven by Streamlit as well as by the CLI, and a Streamlit script has no channel
 to answer a `input()`.
 
-## 7. Being a good client of public infrastructure
+## 8. Being a good client of public infrastructure
 
 FlatScorer runs against volunteer-funded services — Nominatim for geocoding,
 Overpass for map data. Both have usage policies with real teeth, and both are
@@ -232,7 +283,7 @@ The general lesson, which applies to any library configured by attribute
 assignment: **setting a config attribute is not evidence that the config took
 effect** — read it back, or assert the name exists.
 
-## 8. How the code is arranged
+## 9. How the code is arranged
 
 The module layering is acyclic and is meant to stay that way:
 
@@ -263,7 +314,7 @@ Two consequences worth knowing:
 `import flatscorer` doesn't drag in osmnx, geopandas and folium. A test fails the
 moment someone adds an eager import there.
 
-## 9. Deliberately not done
+## 10. Deliberately not done
 
 - **Scraping listing portals.** Their terms forbid automated access, the EU sui
   generis database right covers extraction from a listing database, and the
