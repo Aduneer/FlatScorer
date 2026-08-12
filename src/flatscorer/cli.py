@@ -7,6 +7,7 @@ import json
 import os
 import sys
 
+from . import __version__
 from .config import DEFAULT_CONFIG, validate_config
 from .scorer import FlatScorer
 
@@ -43,7 +44,14 @@ def main():
         "--html", type=str, help="Override output HTML map file path"
     )
     parser.add_argument(
+        "--check-config", action="store_true",
+        help="Validate the configuration and exit, without using the network"
+    )
+    parser.add_argument(
         "-q", "--quiet", action="store_true", help="Suppress detailed logs"
+    )
+    parser.add_argument(
+        "--version", action="version", version=f"flatscorer {__version__}"
     )
 
     args = parser.parse_args()
@@ -56,7 +64,7 @@ def main():
         print(f"    {_invocation()} --config {args.generate_config}")
         sys.exit(0)
 
-    if not args.config:
+    if not args.config and not args.check_config:
         print("No config file specified. Running with built-in demo data.")
         print(f"To create your own config: {_invocation()} --generate-config config.json")
         print()
@@ -79,6 +87,15 @@ def main():
         for problem in problems:
             print(f"  - {problem}", file=sys.stderr)
         sys.exit(1)
+
+    # Everything above this point is offline, so --check-config can answer without
+    # spending a Nominatim or Overpass request on a config that may be a typo.
+    if args.check_config:
+        source = f"'{args.config}'" if args.config else "the built-in demo config"
+        destinations = config.get("destinations") or {}
+        print(f"[+] {source} is valid: {len(config['candidates'])} candidate(s), "
+              f"{len(destinations)} destination(s). No network requests were made.")
+        sys.exit(0)
 
     if args.csv:
         config.setdefault("output", {})["csv_file"] = args.csv

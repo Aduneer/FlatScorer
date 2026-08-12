@@ -537,7 +537,7 @@ disabled until they're fixed.
 
 ```
 usage: flatscorer [-h] [-c CONFIG] [--generate-config GENERATE_CONFIG]
-                  [--csv CSV] [--html HTML] [-q]
+                  [--csv CSV] [--html HTML] [--check-config] [-q] [--version]
 
 FlatScorer - Multi-Criteria Apartment Scoring Engine
 
@@ -549,11 +549,30 @@ options:
                         and exit
   --csv CSV             Override output CSV file path
   --html HTML           Override output HTML map file path
+  --check-config        Validate the configuration and exit, without using the
+                        network
   -q, --quiet           Suppress detailed logs
+  --version             show program's version number and exit
 ```
 
 `python -m flatscorer` takes the same arguments, for when the console script
 isn't on your `PATH`.
+
+### Checking a config without running it
+
+`--check-config` runs the whole validation pass and stops there, touching
+neither Nominatim nor Overpass:
+
+```bash
+$ flatscorer --config config.json --check-config
+[+] 'config.json' is valid: 3 candidate(s), 2 destination(s). No network requests were made.
+```
+
+A scoring run takes minutes and spends other people's bandwidth, so finding a
+typo that way is a bad trade — this turns the edit-and-check loop into something
+instant and free. It exits non-zero with the same messages a real run would
+print, which is what makes it usable in a pre-commit hook or CI. With no
+`--config` it checks the built-in demo.
 
 ## Requirements
 
@@ -635,7 +654,7 @@ navigation menu on top of the app's own.
 
 Test modules mirror the source modules — `test_config`, `test_scoring`,
 `test_spatial`, `test_osm`, `test_routing`, `test_geocode`, `test_mapping`,
-`test_run` — plus `test_gui` for the Streamlit front end via `streamlit.testing`
+`test_cli`, `test_run` — plus `test_gui` for the Streamlit front end via `streamlit.testing`
 and `test_api` for the package-layout invariants (the lazy re-export table
 resolving, `import flatscorer` staying free of the geo stack, the two `gui/`
 rules above). Shared fixtures live in `tests/conftest.py`. Both `pytest` and
