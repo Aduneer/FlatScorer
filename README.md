@@ -12,7 +12,8 @@
   <a href="#gui">GUI</a> ·
   <a href="#how-it-works">How It Works</a> ·
   <a href="#configuration">Configuration</a> ·
-  <a href="#cli-reference">CLI Reference</a>
+  <a href="#cli-reference">CLI Reference</a> ·
+  <a href="docs/DESIGN.md">Design Notes</a>
 </p>
 
 <p align="center">
@@ -36,6 +37,15 @@ a ranked table, a CSV, an interactive HTML map, and a sensitivity analysis that
 tells you whether your ranking is robust or hinges on a single weight choice.
 
 **Works anywhere in the world** — CRS is auto-detected from your coordinates.
+
+On a real shortlist, the ranking reproduces the author's own hand-ranking of the
+top 3 in roughly 9 cases out of 10 — a small, self-assessed sample, but it is
+the check the whole design exists to pass.
+
+📐 **[Design notes](docs/DESIGN.md)** — why the score is built the way it is,
+including a four-city measurement of whether the street-network download is
+necessary (ρ=0.986 without it) and a POI data source that was evaluated and
+rejected.
 
 ## Preview
 
