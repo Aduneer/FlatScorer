@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="src/flatscorer/gui/assets/banner.svg" alt="FlatScorer" width="700"/>
+  <img src="https://raw.githubusercontent.com/Aduneer/FlatScorer/main/src/flatscorer/gui/assets/banner.svg" alt="FlatScorer" width="700"/>
 </p>
 
 <p align="center">
@@ -41,14 +41,14 @@ tells you whether your ranking is robust or hinges on a single weight choice.
 
 | Terminal output | Interactive map |
 |---|---|
-| ![Terminal ranking table](assets/screenshot_table.png) | ![Interactive Folium map](assets/screenshot_map.png) |
+| ![Terminal ranking table](https://raw.githubusercontent.com/Aduneer/FlatScorer/main/assets/screenshot_table.png) | ![Interactive Folium map](https://raw.githubusercontent.com/Aduneer/FlatScorer/main/assets/screenshot_map.png) |
 
 ## Quick Start
 
 Install it as a command-line tool:
 
 ```bash
-pip install git+https://github.com/Aduneer/FlatScorer.git
+pip install flatscorer
 
 # Generate a starter config with demo data
 flatscorer --generate-config config.json
@@ -57,8 +57,15 @@ flatscorer --generate-config config.json
 flatscorer --config config.json
 ```
 
+**No Python toolchain? Run the GUI without installing anything**, using
+[`uv`](https://docs.astral.sh/uv/):
+
+```bash
+uvx --from "flatscorer[gui]" flatscorer-gui
+```
+
 [`pipx`](https://pipx.pypa.io/) works too and keeps the fairly heavy geospatial
-stack out of your global site-packages: `pipx install "flatscorer[gui] @ git+https://github.com/Aduneer/FlatScorer.git"`.
+stack out of your global site-packages: `pipx install "flatscorer[gui]"`.
 
 Or work from a checkout:
 
@@ -111,7 +118,7 @@ progress bar naming each step as it starts ("Downloading the cycling street
 network..."), so a slow run reads as slow rather than as a hang.
 
 <p align="center">
-  <img src="assets/gui_preview.png" alt="FlatScorer Streamlit GUI" width="800"/>
+  <img src="https://raw.githubusercontent.com/Aduneer/FlatScorer/main/assets/gui_preview.png" alt="FlatScorer Streamlit GUI" width="800"/>
 </p>
 
 <sub>The flat photos in the demo config and in the screenshots are by Carol M.
@@ -607,4 +614,4 @@ FlatScorer runs on free, community-maintained OpenStreetMap infrastructure:
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+MIT — see [LICENSE](https://github.com/Aduneer/FlatScorer/blob/main/LICENSE).

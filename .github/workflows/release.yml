@@ -1,0 +1,157 @@
+name: Release
+
+# Publishing to PyPI is irreversible: a version number can never be re-uploaded
+# or reused, even after a delete. So everything that could be wrong is checked
+# *before* the upload step, and the upload itself is the last thing that runs.
+on:
+  push:
+    tags:
+      - "v*"
+  # Rehearsal path. Publishes to TestPyPI instead, so the real version number
+  # stays unburned - use this before the first real release.
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # A tag that disagrees with pyproject.toml would publish under a version
+      # nobody can correct afterwards. Fail here instead.
+      - name: The tag matches the version in pyproject.toml
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          python - <<'PY'
+          import os, sys, tomllib
+          with open("pyproject.toml", "rb") as fh:
+              version = tomllib.load(fh)["project"]["version"]
+          tag = os.environ["GITHUB_REF_NAME"].lstrip("v")
+          if tag != version:
+              sys.exit(f"tag {tag!r} != pyproject version {version!r}")
+          print(f"tag and version agree: {version}")
+          PY
+
+      - name: Install build tooling
+        run: python -m pip install --upgrade pip build twine
+
+      - name: Build the wheel and the sdist
+        run: python -m build
+
+      # [tool.setuptools.dynamic] reads requirements.txt at build time, so an
+      # sdist missing it builds fine here and is broken forever on PyPI. Build
+      # a wheel *from the sdist* to prove it stands on its own.
+      - name: The sdist is self-sufficient
+        run: |
+          mkdir /tmp/sdist-check
+          tar xzf dist/*.tar.gz -C /tmp/sdist-check --strip-components=1
+          python -m build --wheel --outdir /tmp/sdist-wheel /tmp/sdist-check
+
+      - name: The metadata renders on PyPI
+        run: python -m twine check --strict dist/*
+
+      - name: Upload the artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+  # The full suite and the clean-venv install already run in CI on every push,
+  # but a tag can point at any commit - so re-run the parts that would make a
+  # release unusable rather than trusting that the tagged commit was green.
+  verify:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Download the built artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+      - name: Install the built wheel into a clean venv
+        run: |
+          python -m venv /tmp/reltest
+          /tmp/reltest/bin/pip install dist/*.whl
+
+      # Run from / so nothing resolves via the checkout by accident.
+      - name: The console script works away from the source tree
+        run: cd / && /tmp/reltest/bin/flatscorer --generate-config /tmp/released.json
+
+      - name: The GUI launcher and its assets ship with the package
+        run: |
+          cd / && /tmp/reltest/bin/python -c "
+          import os
+          from flatscorer import launcher, paths
+          assert os.path.isfile(launcher.app_path()), launcher.app_path()
+          banner = paths.resource_path('gui', 'assets', 'banner.svg')
+          assert os.path.isfile(banner), banner
+          print('gui/app.py and gui/assets shipped OK')
+          "
+
+      - name: The offline test suite passes at the tagged commit
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[dev]"
+          python -m pytest -q
+
+  # Trusted Publishing: PyPI authenticates this workflow by OIDC, so there is
+  # no API token stored anywhere. Configure the publisher once at
+  # https://pypi.org/manage/account/publishing/ - owner Aduneer, repo
+  # FlatScorer, workflow release.yml, environment pypi.
+  publish-testpypi:
+    if: github.event_name == 'workflow_dispatch'
+    needs: verify
+    runs-on: ubuntu-latest
+    environment: testpypi
+    permissions:
+      id-token: write
+    steps:
+      - name: Download the built artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+      # TestPyPI enforces the same "a version can never be re-uploaded" rule, so
+      # without this a rehearsal could only ever be run once per version number.
+      # Never set this on the real PyPI job - there, an already-published
+      # version is something you want to hear about loudly.
+      - name: Publish to TestPyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          repository-url: https://test.pypi.org/legacy/
+          skip-existing: true
+
+  publish-pypi:
+    if: startsWith(github.ref, 'refs/tags/')
+    needs: verify
+    runs-on: ubuntu-latest
+    # Add a required reviewer to this environment in the repo settings to make
+    # the upload a two-step confirmation rather than a consequence of a push.
+    environment: pypi
+    permissions:
+      id-token: write
+    steps:
+      - name: Download the built artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1

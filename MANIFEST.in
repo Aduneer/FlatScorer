@@ -1,0 +1,11 @@
+# setuptools' legacy sdist default sweeps in tests/test_*.py but *not*
+# conftest.py - and every test module does `from conftest import ...`, so
+# without this line the suite that ships in the sdist cannot run at all.
+include tests/conftest.py
+
+# requirements.txt is already included because [tool.setuptools.dynamic] reads
+# it at build time; the siblings ship so CI's jobs can be reproduced from an
+# sdist rather than only from a git checkout.
+include requirements-*.txt
+
+include config.example.json
