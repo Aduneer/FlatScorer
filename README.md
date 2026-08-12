@@ -17,6 +17,7 @@
 </p>
 
 <p align="center">
+  <a href="https://pypi.org/project/flatscorer/"><img src="https://img.shields.io/pypi/v/flatscorer" alt="PyPI version"></a>
   <a href="https://github.com/Aduneer/FlatScorer/actions/workflows/ci.yml"><img src="https://github.com/Aduneer/FlatScorer/actions/workflows/ci.yml/badge.svg" alt="CI status"></a>
   <a href="LICENSE"><img src="https://img.shields.io/github/license/Aduneer/FlatScorer" alt="License"></a>
   <img src="https://img.shields.io/badge/python-3.9%2B-blue" alt="Python 3.9+">
@@ -26,7 +27,8 @@
 
 ## What is this?
 
-FlatScorer is a command-line Python tool that helps you objectively compare
+FlatScorer is a Python tool — a command-line one, with an optional
+[browser GUI](#gui) over the same engine — that helps you objectively compare
 apartments (or any set of candidate addresses) by pulling spatial data from
 OpenStreetMap and computing a composite livability score.
 
@@ -103,12 +105,12 @@ tune weights with sliders, and get the ranked table and interactive map
 right in your browser.
 
 ```bash
-# Installed as a package — the GUI is an optional extra
-pip install "flatscorer[gui] @ git+https://github.com/Aduneer/FlatScorer.git"
+# The GUI is an optional extra on the published package
+pip install "flatscorer[gui]"
 flatscorer-gui
 
 # Or from a checkout
-pip install -r requirements-gui.txt
+pip install -r requirements-gui.txt   # dependencies only
 streamlit run src/flatscorer/gui/app.py
 ```
 
@@ -117,7 +119,8 @@ puts `src/` on `sys.path` when `flatscorer` isn't importable, because Streamlit
 only adds the *script's* own directory.
 
 `flatscorer-gui` forwards any extra arguments to `streamlit run`, so
-`flatscorer-gui --server.port 8600` does what you'd expect.
+`flatscorer-gui --server.port 8600` does what you'd expect. To run it without
+installing anything at all, see the `uvx` line in [Quick Start](#quick-start).
 
 It reuses the `flatscorer` engine directly, so results are identical to the CLI —
 this is just a friendlier way to build the config and view the output.
@@ -364,6 +367,7 @@ Everything is driven by a single JSON file. Generate a template with
     "commute_cap_min": 45,         // a commute this long scores 0 for that destination
     "walking_speed_m_per_min": 83.33,  // assumed pace; 83.33 m/min = 5 km/h
     "cycling_speed_m_per_min": 250,    // assumed pace; 250 m/min = 15 km/h
+    "poi_dedupe_tolerance_m": 10,  // how close a node and a building outline merge
     "max_bbox_span_km": 30,        // refuse to download an area wider than this
     "saturation": {                // count earning half credit (diminishing returns)
       "supermarket": 2, "bakery": 2, "pharmacy": 1,
@@ -417,7 +421,7 @@ Everything is driven by a single JSON file. Generate a template with
 
 - **`poi_dedupe_tolerance_m`** — How close a POI node and a building outline have
   to be before they're treated as one real-world place mapped twice (see
-  [Duplicate POIs](#duplicate-pois) below). Distance is measured to the building's
+  [Duplicate POIs](#duplicate-pois) above). Distance is measured to the building's
   geometry rather than its centroid, so a node anywhere *inside* the building
   already counts as 0 m and this only has to absorb nodes placed just outside a
   wall. Raise it and genuinely distinct neighbouring shops start merging; 0
@@ -505,7 +509,7 @@ or OpenStreetMap download — and report **every** problem at once, naming the
 candidate rather than just the field:
 
 ```
-$ python -m flatscorer --config config.json
+$ flatscorer --config config.json
 Error: configuration is not valid (2 problem(s)):
   - candidates[0] ('Flat A'): 'rent' is missing - a flat with no rent would score
     as if it were free, taking full credit on the rent term and likely topping
@@ -530,16 +534,24 @@ disabled until they're fixed.
 ## CLI Reference
 
 ```
-usage: flatscorer [-h] [-c CONFIG] [--generate-config FILE]
-                  [--csv FILE] [--html FILE] [-q]
+usage: flatscorer [-h] [-c CONFIG] [--generate-config GENERATE_CONFIG]
+                  [--csv CSV] [--html HTML] [-q]
+
+FlatScorer - Multi-Criteria Apartment Scoring Engine
 
 options:
-  -c, --config PATH            JSON configuration file
-  --generate-config PATH       Write a starter config and exit
-  --csv PATH                   Override CSV output path
-  --html PATH                  Override HTML map output path
-  -q, --quiet                  Suppress progress logs
+  -h, --help            show this help message and exit
+  -c, --config CONFIG   Path to JSON configuration file
+  --generate-config GENERATE_CONFIG
+                        Write default example config JSON to specified file
+                        and exit
+  --csv CSV             Override output CSV file path
+  --html HTML           Override output HTML map file path
+  -q, --quiet           Suppress detailed logs
 ```
+
+`python -m flatscorer` takes the same arguments, for when the console script
+isn't on your `PATH`.
 
 ## Requirements
 
@@ -552,11 +564,13 @@ options:
 Install everything with:
 
 ```bash
-pip install -e .            # dependencies and the package itself
+pip install flatscorer       # from PyPI
+pip install -e .             # or from a checkout — dependencies and the package itself
 ```
 
-`pip install -r requirements.txt` installs only the dependencies, which is what
-CI's matrix jobs want but not enough to run the tool from a checkout.
+`pip install -r requirements.txt` installs only the dependencies, not the
+package, so it isn't enough to run the tool from a checkout on its own — CI
+pairs it with `pip install --no-deps -e .`.
 
 ## Overpass API Resilience
 
@@ -628,6 +642,15 @@ rules above). Shared fixtures live in `tests/conftest.py`. Both `pytest` and
 A `package` CI job builds the wheel and installs it into a clean venv with no
 checkout on `sys.path`, so a module missing from `packages` or a broken console
 script fails in CI rather than for whoever runs `pip install` first.
+
+Releases go out from `.github/workflows/release.yml`, triggered by pushing a
+`vX.Y.Z` tag. A PyPI version can never be re-uploaded or reused, so every check
+runs *before* the upload: the tag has to agree with `version` in
+`pyproject.toml`, and a wheel is rebuilt from the sdist and installed clean to
+prove the sdist stands on its own (`[tool.setuptools.dynamic]` reads
+`requirements.txt` at build time, so an sdist missing that file builds here and
+is broken forever on PyPI). Running the workflow manually publishes to TestPyPI
+instead, which is the rehearsal path that leaves the real version unburned.
 
 `requirements.txt` declares version *ranges*, so CI installing the newest of each
 would never exercise the declared floors — and a wrong floor then only breaks for
