@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "flatscorer"
-version = "0.2.0"
+version = "0.3.0"
 description = "Score and compare candidate apartments using OpenStreetMap data — amenities, transit, green space, road noise, walking and cycling commutes, and rent."
 readme = "README.md"
 requires-python = ">=3.9"
