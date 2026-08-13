@@ -9,6 +9,7 @@ import sys
 
 from . import __version__
 from .config import DEFAULT_CONFIG, validate_config
+from .osm import RateLimitedError
 from .scorer import FlatScorer
 
 
@@ -103,4 +104,11 @@ def main():
         config.setdefault("output", {})["html_file"] = args.html
 
     scorer = FlatScorer(config, verbose=not args.quiet)
-    scorer.run()
+    try:
+        scorer.run()
+    except RateLimitedError as e:
+        # A traceback is the wrong shape for "the server asked us to back off":
+        # there is nothing to debug, the message is the entire content, and
+        # burying it under a stack makes the natural next move look like a
+        # re-run rather than a wait.
+        sys.exit(f"\nError: {e}")

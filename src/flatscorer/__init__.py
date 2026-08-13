@@ -47,6 +47,7 @@ _EXPORTS = {
     "NOMINATIM_MIN_INTERVAL_S": "geocode",
     # osm
     "query_with_retry": "osm",
+    "RateLimitedError": "osm",
     "safe_filter": "osm",
     "dedupe_features": "osm",
     "DEFAULT_OVERPASS_MIRRORS": "osm",

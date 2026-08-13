@@ -11,7 +11,7 @@ import json
 import pytest
 from conftest import valid_config
 
-from flatscorer import __version__, cli
+from flatscorer import __version__, cli, osm
 
 
 def run_cli(monkeypatch, *argv):
@@ -97,3 +97,29 @@ def test_generate_config_writes_a_file_that_check_config_then_accepts(monkeypatc
 
     assert run_cli(monkeypatch, "--generate-config", path) == 0
     assert run_cli(monkeypatch, "--config", path, "--check-config") == 0
+
+
+# -- a rate-limited run --
+
+
+def test_a_rate_limited_run_exits_with_the_message_and_no_traceback(monkeypatch, tmp_path, capsys):
+    """The user's next move is to wait, and a stack trace argues for the opposite:
+    it reads as a bug in the tool, and the thing you do with a buggy run is re-run
+    it. Still offline - `FlatScorer` is a stub that never reaches the network."""
+    class RateLimitedScorer:
+        def __init__(self, config, verbose=True, progress=None):
+            pass
+
+        def run(self):
+            raise osm.RateLimitedError("https://overpass-api.de/api/interpreter", 42)
+
+    monkeypatch.setattr(cli, "FlatScorer", RateLimitedScorer)
+    monkeypatch.setattr("sys.argv", ["flatscorer", "--config", write_config(tmp_path, valid_config())])
+
+    with pytest.raises(SystemExit) as exit_info:
+        cli.main()
+
+    message = str(exit_info.value.code)
+    assert "429" in message
+    assert "42 seconds" in message
+    assert exit_info.value.code != 0

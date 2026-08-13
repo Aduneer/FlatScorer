@@ -605,6 +605,14 @@ retries failed requests and rotates through three public mirrors:
 If all mirrors fail, check your internet connection or try again later — the
 OSM infrastructure occasionally has outages.
 
+**One response is not retried and does not fall through to the next mirror: a
+`429 Too Many Requests`.** That is not an outage, it is the server asking this
+client to stop, so the run stops with a message telling you how long to wait.
+Retrying it, or putting the same query to a different mirror, is how a temporary
+throttle becomes a ban — and since FlatScorer identifies itself by name in its
+`User-Agent`, a ban would land on the project rather than on one anonymous IP.
+Anything already downloaded is cached, so a later run resumes from there.
+
 Geocoding goes through Nominatim, which allows **one request per second** and has
 no mirrors. FlatScorer paces its geocoding calls to stay inside that limit and
 retries transient failures up to three times; an address Nominatim simply cannot

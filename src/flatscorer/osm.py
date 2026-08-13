@@ -50,6 +50,68 @@ def _apply_setting(name: str, value: Any):
     setattr(ox.settings, name, value)
 
 
+class RateLimitedError(RuntimeError):
+    """An OSM service answered 429. The run stops here, on purpose.
+
+    Deliberately *not* a `requests` exception subclass: `query_with_retry`
+    catches those and reads them as "try again, then try somewhere else", which
+    is the one response a rate-limit must never get.
+    """
+
+    def __init__(self, url: str, retry_after_s: int | None = None):
+        self.url = url
+        self.retry_after_s = retry_after_s
+        wait = (
+            f"It asked us to wait {retry_after_s} seconds"
+            if retry_after_s
+            else "Wait a few minutes"
+        )
+        super().__init__(
+            f"{url} answered 429 Too Many Requests - we are over its rate limit. "
+            f"{wait} before running again. FlatScorer stops rather than retrying or "
+            "moving to another mirror: a client that keeps knocking after a 429 is how "
+            "a throttle turns into a ban, and our User-Agent names this project, so "
+            "such a ban would land on FlatScorer for everybody rather than on one "
+            "anonymous IP. Little is lost by stopping - whatever already downloaded is "
+            "cached, so a later run resumes from there."
+        )
+
+
+def _retry_after_seconds(response) -> int | None:
+    """The `Retry-After` header as whole seconds, when the server sent a usable one.
+
+    The header may also carry an HTTP-date, which is not parsed here: the value
+    only sharpens the wording of an error message, and "wait a few minutes" is a
+    fine fallback for a form neither Overpass nor Nominatim is known to send.
+    """
+    try:
+        return max(int(response.headers.get("Retry-After", "")), 0) or None
+    except (AttributeError, TypeError, ValueError):
+        return None
+
+
+def _raise_on_rate_limit(response, *args, **kwargs):
+    """A `requests` response hook that turns any 429 into an immediate stop.
+
+    It has to sit this low because osmnx handles 429 itself and never lets the
+    status code reach us: `_overpass_request` sleeps 55 seconds and re-sends the
+    same query *recursively, without a bound*. So the missing 429 branch in
+    `query_with_retry` could not have been written there - there is no exception
+    to branch on, and the real behaviour against a rate-limited mirror was not
+    "retry twice and move on" but "knock every 55 seconds forever".
+
+    A hook runs inside `requests.Session.send`, before osmnx sees the response
+    at all, and an exception raised here propagates straight out through the
+    osmnx call. `_configure_osmnx` installs it in `settings.requests_kwargs`,
+    which osmnx splats into its Nominatim *and* Overpass requests alike - so one
+    hook covers every service this package talks to, which is what makes the
+    stop sign global rather than per-caller.
+    """
+    if response.status_code == 429:
+        raise RateLimitedError(response.url, _retry_after_seconds(response))
+    return response
+
+
 def _configure_osmnx():
     """Apply this project's global osmnx settings. Idempotent, run at import."""
     _apply_setting("use_cache", True)
@@ -65,6 +127,13 @@ def _configure_osmnx():
     # claiming to be osmnx in either header is the same misidentification.
     _apply_setting("http_user_agent", USER_AGENT)
     _apply_setting("http_referer", USER_AGENT)
+
+    # The 429 stop sign, wired in at the single point every osmnx HTTP call goes
+    # through - see `_raise_on_rate_limit` for why it cannot live any higher up.
+    # Note that `timeout` still cannot be smuggled in here: osmnx passes it
+    # separately and the duplicate keyword raises (see `_mirror_is_reachable`).
+    # `hooks` collides with nothing.
+    _apply_setting("requests_kwargs", {"hooks": {"response": [_raise_on_rate_limit]}})
 
 
 _configure_osmnx()
@@ -195,13 +264,20 @@ def _mirror_is_reachable(mirror: str, timeout=MIRROR_PROBE_TIMEOUT_S) -> bool:
     is whether the host is there, not whether it likes the request. Only a
     connection-level failure counts as dead, which is also what keeps a mirror
     that doesn't publish `/api/status` from being skipped for no reason.
+
+    The single exception is 429, which is not an answer about the host at all
+    but an instruction to stop, and which therefore raises rather than returning
+    either verdict. This is the one request in the package that does not go
+    through osmnx, so the hook in `requests_kwargs` cannot fire for it and the
+    same stop sign has to be applied by hand.
     """
     base = mirror.rstrip("/").removesuffix("/interpreter")
     try:
-        requests.get(f"{base}/status", timeout=timeout, headers={"User-Agent": USER_AGENT})
-        return True
+        response = requests.get(f"{base}/status", timeout=timeout, headers={"User-Agent": USER_AGENT})
     except requests.exceptions.RequestException:
         return False
+    _raise_on_rate_limit(response)
+    return True
 
 
 def query_with_retry(fn, mirrors=DEFAULT_OVERPASS_MIRRORS, retries_per_mirror=2, backoff_s=3):
@@ -214,6 +290,13 @@ def query_with_retry(fn, mirrors=DEFAULT_OVERPASS_MIRRORS, retries_per_mirror=2,
 
     Each mirror is probed for reachability before it is used, so an unreachable
     one costs seconds instead of minutes - see `_mirror_is_reachable`.
+
+    **A 429 ends the run instead of moving through the mirror list.** The
+    fallback here is for mirrors that are down or broken; a rate-limit is
+    neither, it is the server telling this client to stop, and answering it by
+    asking a different server the same question is mirror-shopping around a
+    limit we were told about. `RateLimitedError` is raised out of this function
+    untouched - see `_raise_on_rate_limit` for where it comes from.
     """
     original_url = ox.settings.overpass_url
     last_err = None
@@ -227,6 +310,13 @@ def query_with_retry(fn, mirrors=DEFAULT_OVERPASS_MIRRORS, retries_per_mirror=2,
             for attempt in range(1, retries_per_mirror + 1):
                 try:
                     return fn()
+                except RateLimitedError:
+                    # Explicit, though `RateLimitedError` is not in the tuple
+                    # below and would leave on its own: the whole point of this
+                    # function is retrying and falling through, so the one error
+                    # that must do neither should say so where a reader is
+                    # looking, and should survive someone widening that tuple.
+                    raise
                 except (requests.exceptions.ConnectionError,
                         requests.exceptions.Timeout,
                         requests.exceptions.HTTPError,

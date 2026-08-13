@@ -263,6 +263,18 @@ easy to violate accidentally. What the tool does:
   an architectural requirement, not a courtesy.
 - **Responses are cached** to a per-user cache directory, so re-running a
   config re-downloads nothing.
+- **A 429 ends the run.** It is not retried, and it does not fall through to the
+  next Overpass mirror. The mirror list exists for servers that are down or
+  broken; a rate-limit is neither, and both instinctive responses to one —
+  retry, or ask a different server the same question — are what turn a throttle
+  into a ban. This one is worth spelling out because the library's default is
+  the opposite: osmnx handles 429 itself by sleeping 55 seconds and re-sending
+  the same query recursively, without a bound, so the status code never reaches
+  the caller and no amount of care at the call site can help. The interception
+  is a `requests` response hook installed in `settings.requests_kwargs`, which
+  osmnx splats into its Nominatim and Overpass calls alike — low enough to fire
+  before the library's own retry, and general enough that one hook covers every
+  service the package talks to.
 - **Attribution travels with every output.** The CSV opens with an ODbL credit
   comment, the map carries the tile layer's attribution, and the overview report
   has its own credit block. The CSV's notice is deliberately comma-free: anyone

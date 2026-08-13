@@ -222,6 +222,29 @@ def test_progress_reaches_one_even_when_a_candidate_fails_to_geocode(monkeypatch
     assert seen.fractions == sorted(seen.fractions)
 
 
+def test_a_rate_limit_mid_geocode_aborts_the_whole_run(monkeypatch, offline_run):
+    """The candidate loop absorbs a geocoding failure by dropping that address
+    and moving to the next one. For a 429 that is the wrong move twice over: it
+    keeps sending requests to a server that said stop, and it would rank the
+    survivors as though the missing flats had simply lost."""
+    real = fs.geocode_safe
+    asked = []
+
+    def rate_limited_on_the_second(addr, label, **kw):
+        asked.append(label)
+        if len(asked) > 1:
+            raise fs.RateLimitedError("https://nominatim.openstreetmap.org/search")
+        return real(addr, label, **kw)
+
+    monkeypatch.setattr(geocode, "geocode_safe", rate_limited_on_the_second)
+
+    config = one_destination_config()
+    config["candidates"].append({"name": "Flat B", "address": "3 Far Office Rd", "rent": 1500})
+    with pytest.raises(fs.RateLimitedError):
+        offline_run(config)
+    assert len(asked) == 2, "the run kept geocoding after the server said stop"
+
+
 def test_a_mixed_config_announces_both_network_downloads(offline_run):
     seen = ProgressLog()
     offline_run(mixed_mode_config(), graphs={"bike": bike_graph()}, progress=seen)

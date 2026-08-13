@@ -17,6 +17,7 @@ from flatscorer.gui.state import (
     LISTING_URL_DISPLAY,
     _build_config,
 )
+from flatscorer.osm import RateLimitedError
 from flatscorer.scoring import (
     NARROW_MARGIN_THRESHOLD,
     SCORE_SCALE_MAX,
@@ -103,6 +104,16 @@ def render():
                     "csv_bytes": csv_bytes,
                     "failed_candidates": scorer.failed_candidates,
                     "failed_destinations": scorer.failed_destinations,
+                }
+            except RateLimitedError as e:
+                # Nothing is broken and nothing needs fixing - the answer is to
+                # wait - so this must not read as a crash. Especially here: the
+                # Run button is one click away, and a user re-clicking it is
+                # exactly what the stop is for.
+                st.session_state.last_result = {
+                    "error": str(e),
+                    "error_title": "OpenStreetMap asked us to slow down",
+                    "log": log_capture.getvalue(),
                 }
             except SearchAreaError as e:
                 # Not a crash but a rejected input, and the message already names

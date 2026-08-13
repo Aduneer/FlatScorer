@@ -6,6 +6,8 @@ touch the network is either not exercised or stubbed.
 
 from __future__ import annotations
 
+import inspect
+import io
 import time
 from typing import Any
 
@@ -482,6 +484,8 @@ def test_a_station_mapped_as_both_node_and_building_still_counts_once():
 
 class FakeResponse:
     ok = True
+    # The probe reads this too now: any status but 429 means "the host is there".
+    status_code = 200
 
 
 def test_a_probe_that_gets_any_response_counts_as_reachable(monkeypatch):
@@ -541,3 +545,138 @@ def test_the_mirror_setting_is_restored_after_every_mirror_is_skipped(monkeypatc
     with pytest.raises(RuntimeError):
         fs.query_with_retry(lambda: "data", mirrors=MIRRORS)
     assert ox.settings.overpass_url == pinned_mirror
+
+
+# --- A 429 is a stop sign, not a failure to route around ---------------------
+#
+# The mirror fallback above exists for servers that are down or broken. A
+# rate-limit is neither: it is the server telling this client to stop, and both
+# available answers to it - retry the mirror, or ask the next mirror the same
+# question - are the behaviour that turns a throttle into a ban. Our User-Agent
+# names the project, so such a ban lands on FlatScorer rather than on one
+# anonymous IP.
+
+def fake_response(status_code: int, url: str = "https://mirror-a/api/interpreter",
+                  headers: dict | None = None) -> requests.Response:
+    response = requests.Response()
+    response.status_code = status_code
+    response.url = url
+    response.headers.update(headers or {})
+    return response
+
+
+def test_the_hook_raises_on_a_429():
+    with pytest.raises(fs.RateLimitedError) as excinfo:
+        fs.osm._raise_on_rate_limit(fake_response(429))
+    message = str(excinfo.value)
+    assert "429" in message
+    assert "mirror-a" in message
+
+
+def test_the_hook_passes_every_other_response_through():
+    """504 in particular: osmnx treats it as a 429 and retries both the same way,
+    but a gateway timeout really is transient and belongs to the mirror fallback."""
+    for status in (200, 400, 404, 500, 504):
+        response = fake_response(status)
+        assert fs.osm._raise_on_rate_limit(response) is response
+
+
+def test_a_retry_after_header_reaches_the_user():
+    with pytest.raises(fs.RateLimitedError) as excinfo:
+        fs.osm._raise_on_rate_limit(fake_response(429, headers={"Retry-After": "42"}))
+    assert excinfo.value.retry_after_s == 42
+    assert "42 seconds" in str(excinfo.value)
+
+
+def test_a_retry_after_we_cannot_parse_still_gives_advice():
+    """The header's HTTP-date form is not parsed, and a server may send none at
+    all - neither may cost the user the sentence telling them what to do."""
+    for headers in ({}, {"Retry-After": "Wed, 13 Aug 2026 10:00:00 GMT"}):
+        with pytest.raises(fs.RateLimitedError) as excinfo:
+            fs.osm._raise_on_rate_limit(fake_response(429, headers=headers))
+        assert excinfo.value.retry_after_s is None
+        assert "Wait a few minutes" in str(excinfo.value)
+
+
+def test_osmnx_is_configured_to_pass_requests_our_hook():
+    """The same lesson as the user-agent: a setting assigned is not a setting
+    applied. If this hook is not in `requests_kwargs`, nothing intercepts a 429
+    and osmnx's own handling - sleep 55 s, re-send, forever - is what runs."""
+    assert fs.osm._raise_on_rate_limit in ox.settings.requests_kwargs["hooks"]["response"]
+
+
+class RateLimitedAdapter(requests.adapters.BaseAdapter):
+    """Answers every request 429 without touching the network."""
+
+    def send(self, request, **kwargs):
+        response = fake_response(429, url=request.url)
+        response.raw = io.BytesIO(b"")
+        return response
+
+    def close(self):
+        pass
+
+
+def test_requests_honours_the_hook_the_way_osmnx_passes_it():
+    """Calling the hook by hand proves nothing about whether it ever fires.
+
+    This sends `settings.requests_kwargs` through `requests` exactly as osmnx
+    does, so it pins both halves: that the dict has the shape `requests` expects,
+    and that the error escapes the call rather than being swallowed in `send`.
+    """
+    session = requests.Session()
+    session.mount("https://", RateLimitedAdapter())
+    with pytest.raises(fs.RateLimitedError):
+        session.get("https://mirror-a/api/interpreter", **ox.settings.requests_kwargs)
+
+
+def test_a_429_stops_instead_of_retrying_the_mirror_or_walking_to_the_next(no_sleep):
+    queried = []
+
+    def rate_limited():
+        queried.append(ox.settings.overpass_url)
+        raise fs.RateLimitedError("https://mirror-a/api/interpreter")
+
+    with pytest.raises(fs.RateLimitedError):
+        fs.query_with_retry(rate_limited, mirrors=MIRRORS, retries_per_mirror=2)
+    # Exactly one request. Not the second attempt on this mirror, and not the
+    # two mirrors after it.
+    assert queried == [MIRRORS[0]]
+
+
+def test_the_mirror_setting_is_restored_after_a_429(no_sleep, pinned_mirror):
+    def rate_limited():
+        raise fs.RateLimitedError("https://mirror-a/api/interpreter")
+
+    with pytest.raises(fs.RateLimitedError):
+        fs.query_with_retry(rate_limited, mirrors=MIRRORS)
+    assert ox.settings.overpass_url == pinned_mirror
+
+
+def test_a_rate_limited_status_probe_stops_before_any_query_is_sent(monkeypatch, no_sleep):
+    """The probe is the one request that does not go through osmnx, so the hook
+    in `requests_kwargs` never fires for it. A 429 there must still stop the run
+    rather than count as "the host answered, so it is reachable"."""
+    monkeypatch.setattr(fs.osm, "_mirror_is_reachable", REAL_MIRROR_PROBE)
+    monkeypatch.setattr(fs.osm.requests, "get", lambda url, **kw: fake_response(429, url=url))
+
+    def fn():
+        raise AssertionError("a mirror that just said 429 must never be queried")
+
+    with pytest.raises(fs.RateLimitedError):
+        fs.query_with_retry(fn, mirrors=MIRRORS)
+
+
+def test_our_requests_kwargs_cannot_collide_with_what_osmnx_already_passes():
+    """The reason `timeout` is not in there, kept as a rule rather than a memory.
+
+    osmnx splats `requests_kwargs` into the *same* call it passes `timeout=`,
+    `headers=` and the query body to, so a key it already supplies raises
+    TypeError on every request - which is how the dead-mirror timeout fix failed
+    the first time. Anything added to this setting has to clear that bar.
+    """
+    passed_by_osmnx = {"url", "data", "params", "timeout", "headers"}
+    accepted = set(inspect.signature(requests.Session.request).parameters)
+    for key in ox.settings.requests_kwargs:
+        assert key in accepted, f"requests does not accept {key!r}"
+        assert key not in passed_by_osmnx, f"{key!r} would arrive twice in one call"

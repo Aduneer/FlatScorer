@@ -82,12 +82,26 @@ def use_nominatim(url: str = DEFAULT_NOMINATIM_URL):
 
 
 def geocode_safe(address: str, label: str, attempts: int = GEOCODE_ATTEMPTS) -> tuple[float, float] | None:
-    """Safely geocode an address into (latitude, longitude) tuple, with rate limiting and retries."""
+    """Safely geocode an address into (latitude, longitude) tuple, with rate limiting and retries.
+
+    Returns `None` for an address Nominatim cannot resolve, so `run()` can drop
+    that one candidate and carry on. The single failure it does *not* absorb is
+    `osm.RateLimitedError`, which is fatal to the whole run - see below.
+    """
     last_err: Exception | None = None
     for attempt in range(1, attempts + 1):
         _throttle_geocode()
         try:
             return ox.geocode(address)
+        except _osm.RateLimitedError:
+            # Nominatim asked us to stop, and this loop plus the caller's loop
+            # would otherwise answer that with two more requests for this address
+            # and three for every remaining one. Dropping the candidate is no
+            # better than retrying it: the next candidate is the same request
+            # with a different string in it. So a 429 is fatal to the run rather
+            # than to one address, and the throttle above is what should have
+            # kept us from ever seeing one.
+            raise
         except InsufficientResponseError as e:
             # Nominatim answered, it just has no match - retrying cannot help.
             last_err = e

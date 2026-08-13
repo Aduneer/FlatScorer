@@ -58,6 +58,24 @@ def test_geocode_safe_does_not_retry_an_address_nominatim_cannot_match(monkeypat
     assert len(calls) == 1, "a definitive 'no match' is not worth retrying"
 
 
+def test_a_rate_limited_geocode_stops_the_run_rather_than_the_candidate(monkeypatch):
+    """Every other failure here drops one address and lets the run continue. A
+    429 cannot: the next candidate is the same request with a different string
+    in it, so "carry on" means three more requests per remaining address to a
+    server that just asked us to stop."""
+    monkeypatch.setattr(time, "sleep", lambda _s: None)
+    calls = []
+
+    def rate_limited(address):
+        calls.append(address)
+        raise fs.RateLimitedError("https://nominatim.openstreetmap.org/search")
+
+    monkeypatch.setattr(ox, "geocode", rate_limited)
+    with pytest.raises(fs.RateLimitedError):
+        fs.geocode_safe("Somewhere", "Flat A")
+    assert len(calls) == 1, "retrying is the one thing a 429 rules out"
+
+
 def test_geocode_calls_are_spaced_to_respect_the_nominatim_policy(monkeypatch):
     """Nominatim allows 1 req/sec; the throttle must sleep for the shortfall."""
     clock = {"now": 100.0}
